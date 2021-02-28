@@ -1,0 +1,211 @@
+---
+title: "Decision Tree and EDA"
+author: "Xuanqi Liang(U86768582)"
+date: "2/28/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+...{r}
+## load libraries
+library(data.table)
+library(ggplot2)
+library(ggthemes)
+library(scales)
+library(dplyr)
+library(glmnet)
+library(tidyr)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(chron)
+theme_set(theme_bw())
+...
+
+REGRESSION TREE
+...{r}
+##training dataset
+dd <- fread("/Users/liangxuanqi/Desktop/flights_delay_model.csv", stringsAsFactors = T)
+
+##change data types
+dd$DAY_OF_MONTH <- as.factor(dd$DAY_OF_MONTH)
+dd$DAY_OF_WEEK <- as.factor(dd$DAY_OF_WEEK)
+dd$ORIGIN <- as.factor(dd$ORIGIN)
+dd$AIRLINE <- as.factor(dd$AIRLINE)
+dd$YEAR <- as.factor(dd$YEAR)
+dd$DEP_DELAY <- as.numeric(dd$DEP_DELAY)
+
+##model for origin: ATL
+atl <- dd[ORIGIN == "ATL"]
+
+##Train and test datasets
+atl[, test:=0]
+atl[sample(nrow(atl), 10000), test:=1]
+atl.test <- atl[test==1]
+atl.train <- atl[test==0]
+
+atl.train.sample.size <- 5000
+atl.train.sample <- atl.train[sample(nrow(atl.train), atl.train.sample.size)]
+
+##Data preparation
+f1 <- as.formula(DEP_DELAY ~ AIRLINE+DAY_OF_MONTH+YEAR+DAY_OF_WEEK+AIR_TIME+DISTANCE+EARLY_AM+AM+PM+LATE_PM+Total_Cancellations)
+x1.train.sample <- model.matrix(f1, atl.train.sample)[, -1]
+y.train <- atl.train$DEP_DELAY
+y.train.sample <- atl.train.sample$DEP_DELAY
+
+atl.test[, DEP_DELAY:=1] 
+x1.test <- model.matrix(f1, atl.test)[, -1]
+y.test <- atl.test$DEP_DELAY
+
+##Regression tree
+fit.tree <- rpart(f1,
+                  atl.train.sample,
+                  control = rpart.control(cp = 0.001))
+par(xpd = TRUE)
+plot(fit.tree, compress=TRUE)
+text(fit.tree, use.n=TRUE)
+
+##plot the tree
+rpart.plot(fit.tree)
+...
+
+
+
+ATLANT EDA
+...{r}
+##Load dataset
+df <- fread("/Users/liangxuanqi/Desktop/flights-master.csv")
+df[,Day_before := (DAY_OF_MONTH - 1)]
+str(df)
+b <- fread("/Users/liangxuanqi/Desktop/total_cancellation.csv")
+setkey(b, ORIGIN, ORIGIN_CITY_NAME, AIRLINE,Day_before, DAY_OF_MONTH, YEAR, DEST, CRS_DEP_TIME)
+setkey(df, ORIGIN, ORIGIN_CITY_NAME, AIRLINE, Day_before, DAY_OF_MONTH, YEAR, DEST, CRS_DEP_TIME)
+result <- merge(df, b, all.x =TRUE)
+
+##Clean the columns name
+result = subset(result, select = -c(38:66,68) )
+names(result) <- gsub("\\.x","",names(result))
+result[is.na(Total_Cancellations), Total_Cancellations := 0]
+write.csv(result,"original_flights_df.csv", row.names = FALSE)
+
+cols <- c('MONTH','MKT_CARRIER_AIRLINE_ID','MKT_CARRIER','TAIL_NUM',
+          'ORIGIN_CITY_NAME','ORIGIN_STATE_ABR','DEST_CITY_NAME','DEST_STATE_ABR',
+          'DEST_STATE_NM','DEP_TIME','ARR_TIME','ARR_DELAY',
+          'CANCELLED','DIVERTED','ACTUAL_ELAPSED_TIME','DIV_AIRPORT_LANDINGS','CODE',
+          'Day_before','CRS_DEP_TIME_Formatted','CRS_DEP_HOUR','DIV_REACHED_DEST')
+r <- copy(result)
+setDF(r)
+r <- r[,!(names(r) %in% c(cols))]
+setDT(r)
+write.csv(r,"flights_model_df.csv", row.names = FALSE)
+
+##Subsetting to Atlanta Airport
+atl_airport <- df[ORIGIN == 'ATL',]
+atl_airport[,.N, by ='AIRLINE']
+setDT((atl))
+...
+
+EDA Part
+...{r}
+## How many records for each airline
+p1 <- ggplot(atl) +
+  geom_bar(mapping=aes(x=AIRLINE), fill="light blue")
+
+p1 + theme(axis.text.x = element_text(angle = 20)) + xlab("Airline") + ylab("Frequency")
+#Delta Airlines have more flights in Atlanta
+#American Airlines have a little more regarding frequency than United Airlines
+
+## number of flights in differnet time
+early_am <- atl_airport[EARLY_AM == TRUE,.(.N, mean_dep = mean(DEP_DELAY)),by = .(EarlyAM = EARLY_AM)]
+colnames(early_am)[1] <- 'Interval'
+early_am$Interval <- as.character(early_am$Interval)
+early_am[, Interval := 'EARLY AM']
+
+am <- atl_airport[AM == TRUE,.(.N, mean_dep = mean(DEP_DELAY)),by = .(AM = AM)]
+colnames(am)[1] <- 'Interval'
+am$Interval <- as.character(am$Interval)
+am[, Interval := 'AM']
+
+pm <- atl_airport[PM == TRUE,.(.N, mean_dep = mean(DEP_DELAY)),by = .(PM = PM)]
+colnames(pm)[1] <- 'Interval'
+pm$Interval <- as.character(pm$Interval)
+pm[, Interval := 'PM']
+
+late_pm <- atl_airport[LATE_PM == TRUE,.(.N, mean_dep = mean(DEP_DELAY)),by = .(LATE_PM = LATE_PM)]
+colnames(late_pm)[1] <- 'Interval'
+late_pm$Interval <- as.character(late_pm$Interval)
+late_pm[, Interval := 'LATE PM']
+
+category <- rbind(early_am, am, pm, late_pm)
+ggplot(category, aes(x=Interval, y=N, fill=Interval)) +
+  geom_col() + ggtitle("Airline flights by interval") + ylab("Frequency")
+#Most of the flights are on PM, and early am have the least flights.
+
+head(atl_airport)
+minutes <- atl_airport$DEP_DELAY
+minutes <- substr(times((minutes%/%60 +  minutes%%60 /60)/24), 1, 5) 
+delayed <- df[DEP_DELAY > 0, .(number_delays = .N), by = ORIGIN]
+not_delayed <- df[DEP_DELAY <= 0,.(number_on_time = .N), by= ORIGIN]
+total <- merge(delayed, not_delayed, by='ORIGIN')
+
+X <- atl[DEP_DELAY > 0, .(meanDelay = mean(DEP_DELAY)), by =ORIGIN]
+
+##on time flights v.s. delay flight in atlanta airport
+total$ORIGIN <- as.factor(total$ORIGIN)
+dat_long <- total %>%
+  gather("Stat", "Value", -ORIGIN)
+
+setDT(dat_long)
+
+ggplot(dat_long[ORIGIN == 'ATL',], aes(x = ORIGIN, y = Value, fill = Stat)) +
+  geom_col(position = "dodge")
+#We have more on time flights than delay flights in Atlanta airport
+
+##day of week delay
+weekly_delay <- atl_airport[,.(mean_delay = mean(DEP_DELAY)), by ='DAY_OF_WEEK']
+weekly_delay
+ggplot(weekly_delay,aes(x = DAY_OF_WEEK, y = mean_delay)) + geom_point() + geom_smooth(method = "glm")
+#It shows Monday, Thursday, Friday, and Sunday have more dealy time over the average delay time
+
+
+#See delays by departure categories
+category
+ggplot(category, aes(x=Interval, y=mean_dep, fill=Interval)) +
+  geom_col() + ggtitle("Departure average delay by interval") + ylab("AVERAGE")
+# In average, there are more delays in the afternoon (pm and late pm)
+# Based on our data, early am flights will depart earlier than estimated departure time
+# ORDER -> LATE PM, PM, AM , EARLY AM
+
+## DISTANCE and DELAYS
+distance_delay_weekly <- atl_airport[,.(delay = mean(DEP_DELAY), dist = mean(DISTANCE)), by ='DAY_OF_WEEK']
+ggplot(distance_delay_weekly,aes(x = dist, y = delay)) + geom_point() + geom_smooth(method = "lm")
+
+distance_delay_airline <- atl_airport[,.( delay = mean(DEP_DELAY), dist = mean(DISTANCE)), by ='AIRLINE']
+ggplot(distance_delay_airline,aes(x = dist, y = delay)) + geom_point() + geom_smooth(method = "lm")
+#If we consider the distance of each flight every day of the week, we see a positive relationship between Delay and Distance
+
+##number of records in 2019 and 2020 for atlanta airport
+ggplot(atl) +
+  geom_bar(mapping=aes(YEAR), fill="light blue")
+
+#Because of the COVID-19, more records for 2019 than 2020
+...
+
+WEATHER API 
+...{r}
+aa <- fread("/Users/liangxuanqi/Desktop/atlanta2019.csv")
+bb <- fread("/Users/liangxuanqi/Desktop/atlanta2020.csv")
+atl_weather <- merge(aa, bb, all.x =TRUE)
+
+atl_weather$day <- as.factor(atl_weather$day)
+atl_weather$year <- as.factor(atl_weather$year)
+
+atlanta <- merge(atl, atl_weather, all.x =TRUE, by.x = c('DAY_OF_MONTH','YEAR'), by.y = c('day','year'))
+atlanta[,.(location := NULL, date_time := NULL)]
+write.csv(atlanta,"atl_flights.csv", row.names = FALSE)
+
+str(atlanta)
+...

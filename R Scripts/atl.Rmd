@@ -1,0 +1,198 @@
+---
+title: "atl"
+author: "Jingjing Lu (U95174905)"
+date: "2/27/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+#import
+library(data.table)
+library(ggplot2)
+library(ggthemes)
+library(scales)
+library(lubridate)
+theme_set(theme_bw())
+library(dplyr)
+library(glmnet)
+library(randomForest)
+```
+```{r}
+dd<- fread("flights_delay_model.csv")
+str(dd)
+dd$DAY_OF_MONTH <- as.factor(dd$DAY_OF_MONTH)
+dd$YEAR <- as.factor(dd$YEAR)
+dd$DAY_OF_WEEK <- as.factor(dd$DAY_OF_WEEK)
+
+```
+
+model for origin: ATL
+```{r}
+atl <- dd[ORIGIN == "ATL"]
+
+```
+1. linear regression model
+```{r}
+# filtering equally by airline
+atl[, .N, by= AIRLINE]
+sample <- 1579
+new_atl <- atl %>% group_by(AIRLINE) %>% sample_n(sample)
+setDT(new_atl)
+new_atl[, .N, by= AIRLINE]
+
+```
+adding in weather data
+```{r}
+weather_atl <- fread("atlanta2019.csv")
+weather_atl$day <- as.factor(weather_atl$day)
+weather_atl$year <- as.factor(weather_atl$year)
+
+atlanta <- merge(new_atl, weather_atl, all.x = TRUE, by.x = c('DAY_OF_MONTH','YEAR'), by.y = c('day', 'year'))
+atlanta[, location:=NULL]
+atlanta[, date_time:= NULL]
+```
+
+
+naive linear regression
+```{r}
+yhat<- mean(atlanta$DEP_DELAY)
+atl_nlr <- atlanta
+atl_nlr[, yhat:= yhat]
+mse.nlr <- mean((atl_nlr$DEP_DELAY- atl_nlr$yhat)^2)
+mse.nlr
+```
+preparing data
+```{r}
+set.seed(800)
+atlanta_lm1 <- atlanta
+#splitting data
+index <- sample(nrow(atlanta_lm1), 5000, replace= TRUE)
+dd.test<- atlanta_lm1[index, ]
+dd.train <- atlanta_lm1[-index, ]
+
+```
+
+
+lm formulas
+```{r}
+f1 <- as.formula(DEP_DELAY ~ DAY_OF_MONTH + DAY_OF_WEEK + DISTANCE + AIRLINE + humidity  + pressure + tempC + visibility + windspeedKmph)
+
+f2 <- as.formula(DEP_DELAY ~ DAY_OF_MONTH + DAY_OF_WEEK  + DISTANCE + AIRLINE  + visibility + windspeedKmph)
+
+f3 <- as.formula(DEP_DELAY ~ DAY_OF_MONTH + DAY_OF_WEEK + DISTANCE + humidity  + pressure + tempC + visibility + windspeedKmph)
+
+```
+```{r}
+y.train <- dd.train$DEP_DELAY
+y.test<- dd.test$DEP_DELAY
+```
+fitting in model
+```{r}
+fit.lm1 <- lm(f1, dd.train)   # all predictors
+fit.lm2 <- lm(f2, dd.train)   # removing humidity, pressure, temp
+fit.lm3 <- lm(f3, dd.train)   # removing airline 
+```
+training data mse
+```{r}
+#lm1
+yhat.train.lm1 <- predict(fit.lm1)
+mse.train.lm1 <- mean((y.train- yhat.train.lm1)^2)
+mse.train.lm1
+```
+```{r}
+#lm2
+yhat.train.lm2 <- predict(fit.lm2)
+mse.train.lm2<- mean((y.train-yhat.train.lm2)^2)
+mse.train.lm2
+```
+```{r}
+#lm3
+yhat.train.lm3 <- predict(fit.lm3)
+mse.train.lm3 <- mean((y.train-yhat.train.lm3)^2)
+mse.train.lm3
+```
+test data mse
+```{r}
+#lm1
+yhat.test.lm1 <- predict(fit.lm1, dd.test)
+mse.test.lm1 <- mean((y.test - yhat.test.lm1)^2)
+mse.test.lm1
+```
+```{r}
+#lm2
+yhat.test.lm2 <- predict(fit.lm2, dd.test)
+mse.test.lm2 <- mean((y.test - yhat.test.lm2)^2)
+mse.test.lm2
+```
+```{r}
+yhat.test.lm3 <- predict(fit.lm3, dd.test)
+mse.test.lm3 <- mean((y.test - yhat.test.lm3)^2)
+mse.test.lm3  
+```
+The test data has a much higher mse than we would expect. So we try to fit in ridge and lasso
+
+
+
+2.ridge regression
+```{r}
+atlanta <- atlanta[, yhat := NULL]
+atl_rr <- atlanta
+```
+```{r}
+f4<- as.formula(DEP_DELAY ~ DAY_OF_MONTH + DAY_OF_WEEK + DISTANCE + AIRLINE + humidity  + pressure + tempC + visibility + windspeedKmph)
+```
+
+```{r}
+atl_rr[, test:=0]
+atl_rr[sample(nrow(atl_rr), 5000, replace= TRUE), test:=1]
+rr.test<- atl_rr[test==1]
+rr.train<- atl_rr[test==0]
+
+x1.train <- model.matrix(f4, rr.train)[,-1]
+y.train<- rr.train$DEP_DELAY
+
+x1.test <- model.matrix(f4, rr.test)[,-1]
+y.test<- rr.test$DEP_DELAY
+
+```
+```{r}
+fit.ridge <- cv.glmnet(x1.train, y.train, alpha= 0, nfolds=10)
+```
+
+3.lasso regression
+```{r}
+fit.lasso <- cv.glmnet(x1.train, y.train, alpha=0.5, nfolds = 10)
+```
+
+
+4. random forest
+```{r}
+rf<- atlanta
+rf[, test:=0]
+rf[sample(nrow(rf), 5000, replace=TRUE), test:=1]
+rf.test<- rf[test==1]
+rf.train<- rf[test==0]
+```
+```{r}
+rf.train.sample.size<- 25000
+rf.train.sample<- rf.train[sample(nrow(rf.train), rf.train.sample.size, replace=TRUE)]
+```
+```{r}
+y.train<- rf.train$DEP_DELAY
+y.train.sample <- rf.train.sample$DEP_DELAY
+y.test <- rf.test$DEP_DELAY
+```
+```{r}
+f6 <-as.formula(DEP_DELAY ~ DAY_OF_MONTH + DAY_OF_WEEK + DISTANCE + humidity  + pressure + tempC + visibility + windspeedKmph)
+fit.rf<- randomForest(f6, dd.train, ntree=500, fit.trace=F)
+```
+
+
+
+
+
+
