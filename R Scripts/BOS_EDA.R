@@ -304,10 +304,10 @@ mse.predicted <- mean((boston_model$DEP_DELAY - predicted)^2)
 boston_model[, PREDICTED := predicted]
 
 
-## Let's see how the model predicts BIG delays as opposed to small ones
+## Let's see how the model predicts delays as opposed to small ones
 
 
-bos_grouping <- boston_model[DEP_DELAY > 120]
+bos_grouping <- boston_model[DEP_DELAY > 100]
 mse.grouping <- mean((bos_grouping$DEP_DELAY - bos_grouping$PREDICTED)^2)
 mse.grouping
 
@@ -315,7 +315,7 @@ mse.grouping
 ### This basically means that according to our models, the really big delays are not predictable, most likely caused by features we don't have or are truly random
 
 
-
+summary(fit.lasso)
 
 
 
