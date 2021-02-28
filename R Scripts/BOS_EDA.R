@@ -203,6 +203,8 @@ yhat.test.lm3 <- predict(fit.lm3, dd.test)
 mse.test.lm3 <- mean((y.test - yhat.test.lm3)^2)
 # 1806.89  (42 mins lowest test MSE for LM with f3 formula/predictors)
 
+# These are much higher, we expect multicolinearity is a factor, let's use other types of regressions that minimize this
+
 
 
 
@@ -284,6 +286,35 @@ mse.train.net <- mean((y.train - yhat.train.net)^2)
 yhat.test.net <- predict(fit.net, x1.test, s = fit.net$lambda.min)
 mse.test.net <- mean((y.test - yhat.test.net)^2)
 # 1386.29
+
+
+
+
+
+
+#### Visualizing best model results  ####
+
+boston[, test := NULL]
+boston_model <- boston
+X_lasso <- model.matrix(f1, boston_model)[, -1]
+predicted <- predict(fit.lasso, X_lasso, s=fit.lasso$lambda.min)
+mse.predicted <- mean((boston_model$DEP_DELAY - predicted)^2)
+#1547.42
+
+boston_model[, PREDICTED := predicted]
+
+
+## Let's see how the model predicts BIG delays as opposed to small ones
+
+
+bos_grouping <- boston_model[DEP_DELAY > 120]
+mse.grouping <- mean((bos_grouping$DEP_DELAY - bos_grouping$PREDICTED)^2)
+mse.grouping
+
+
+### This basically means that according to our models, the really big delays are not predictable, most likely caused by features we don't have or are truly random
+
+
 
 
 
