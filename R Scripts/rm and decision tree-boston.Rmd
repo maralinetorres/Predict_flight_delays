@@ -1,0 +1,167 @@
+---
+title: "boston regression tree and random forest"
+author: "Cheng Chen"
+date: "2/28/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+```{r}
+
+```
+
+## load libraries
+```{r}
+library(data.table)
+library(ggplot2)
+library(ggthemes)
+library(scales)
+library(dplyr)
+library(glmnet)
+library(rpart) 
+library(rpart.plot)
+library(randomForest)
+library(tidyverse)
+library(caret)
+library(ipred)
+library(gbm)
+library(boot)
+theme_set(theme_bw())
+```
+
+## Load Dataset
+```{r}
+df <- fread("/Users/cc/Desktop/BA810/Predict_flight_delays/Dataset/flights-master.csv")
+head(df,10)
+df$DAY_OF_MONTH <- as.factor(df$DAY_OF_MONTH)
+df$DAY_OF_WEEK <- as.factor(df$DAY_OF_WEEK)
+df$YEAR <- as.factor(df$YEAR)
+```
+
+# dropping columns for models
+```{r}
+df[,MKT_CARRIER_AIRLINE_ID := NULL]
+df[,MKT_CARRIER := NULL]
+df[,TAIL_NUM := NULL]
+df[,ORIGIN_CITY_NAME := NULL]
+df[,ORIGIN_STATE_ABR := NULL]
+df[,DEST_CITY_NAME := NULL]
+df[,DEST_STATE_ABR := NULL]
+df[,DEST_STATE_NM := NULL]
+df[,DEP_TIME := NULL]
+df[,CRS_ARR_TIME := NULL]
+df[,ARR_TIME := NULL]
+df[,ARR_DELAY := NULL]
+df[,CANCELLED := NULL]
+df[,DIVERTED := NULL]
+df[,CRS_ELAPSED_TIME := NULL]
+df[,ACTUAL_ELAPSED_TIME := NULL]
+df[,AIR_TIME := NULL]
+df[,DIV_AIRPORT_LANDINGS := NULL]
+df[,DIV_REACHED_DEST := NULL]
+df[,CODE := NULL]
+df[,EARLY_AM := NULL]
+df[,AM := NULL]
+df[,PM := NULL]
+df[,LATE_PM := NULL]
+```
+
+## subet boston datastset
+```{r}
+bos <- df[ORIGIN == 'BOS']
+head(bos)
+str(bos)
+```
+
+## getting hour buckets from scheduled flight departure
+```{r}
+bos$CRS_DEP_TIME <- as.character(bos$CRS_DEP_TIME)
+for( i in 1:nrow(bos)){
+  x <- bos[i,]
+  number_string = nchar(x$CRS_DEP_TIME)
+  if(number_string == 3){
+    bos[i,CRS_DEP_TIME := paste0("0", CRS_DEP_TIME)]
+  }else if(number_string == 2){
+    bos[i,CRS_DEP_TIME := paste0("0", CRS_DEP_TIME)]
+    bos[i,CRS_DEP_TIME := paste0("0", CRS_DEP_TIME)]
+  }else if(number_string == 1){
+    bos[i,CRS_DEP_TIME := paste0("0", CRS_DEP_TIME)]
+    bos[i,CRS_DEP_TIME := paste0("0", CRS_DEP_TIME)]
+    bos[i,CRS_DEP_TIME := paste0("0", CRS_DEP_TIME)]
+  }
+}
+
+d1 <- strptime(bos$CRS_DEP_TIME, format = "%H%M")
+d2 <- format(d1, format = "%H:%M:%S")
+bos[,CRS_DEP_TIME_Formatted := d2]
+bos$CRS_DEP_TIME_Formatted <- as.factor(bos$CRS_DEP_TIME_Formatted)
+bos[,CRS_DEP_HOUR := hour(as.hms(as.character(bos$CRS_DEP_TIME_Formatted)))]
+
+```
+## merge boston weather datatset
+```{r}
+weather <- fread("/Users/cc/Desktop/BA810/Predict_flight_delays/Dataset/boston-weather.csv")
+weather$day <- as.factor(weather$day)
+weather$year <- as.factor(weather$year)
+
+boston <- merge(bos, weather, all.x =TRUE, by.x = c('DAY_OF_MONTH','YEAR'), by.y = c('day','year'))
+head(boston)
+```
+## split train and test dataset
+```{r}
+set.seed(2021)
+index=sample(2,nrow(boston),replace = TRUE,prob=c(0.8,0.2))
+trainData<-boston[index==1,]  
+testData<-boston[index==2,]
+```
+## fitting the regression tree
+```{r}
+tree <- rpart(DEP_DELAY ~ DAY_OF_MONTH + DAY_OF_WEEK + DEST + DISTANCE + AIRLINE + CRS_DEP_HOUR + humidity + precipMM + pressure + tempC + visibility + windspeedKmph, data = trainData, method = "anova")
+rpart.plot(tree)
+plotcp(tree)
+tree$cptable
+```
+## prune the tree with cp=0.01
+```{r}
+prune.tree <- prune(tree, cp = 0.01)
+prp(prune.tree, type = 1, extra = 1, under = TRUE, split.font = 2, varlen = -10)
+
+```
+## evaluate the performance of tree
+```{r}
+pred <- predict(prune.tree, newdata = testData)
+
+mse.tree <- mean((pred - testData$DEP_DELAY ) ^ 2)
+print(mse.tree)
+
+Values1 <- data.frame(obs = testData$DEP_DELAY, pred = pred)
+defaultSummary(Values1)
+```
+
+
+## fitting the random forest model 
+```{r}
+install.packages("randomForest")
+library(randomForest)
+
+trainData <- na.omit(trainData)
+
+rf_ntree <- randomForest(DEP_DELAY ~ DAY_OF_MONTH + DAY_OF_WEEK + DEST + DISTANCE + AIRLINE + CRS_DEP_HOUR + humidity + precipMM + pressure + tempC + visibility + windspeedKmph,data = trainData,ntree=500, proximity=TRUE) 
+plot(rf_ntree)
+
+rsample.rf=randomForest(DEP_DELAY ~ DAY_OF_MONTH + DAY_OF_WEEK + DEST + DISTANCE + AIRLINE + CRS_DEP_HOUR + humidity + precipMM + pressure + tempC + visibility + windspeedKmph,data = trainData,ntree=60,mtry=2, proximity=TRUE) 
+print(rsample.rf)
+
+rsample.rf=randomForest(DEP_DELAY ~ DAY_OF_MONTH + DAY_OF_WEEK + DEST + DISTANCE + AIRLINE + CRS_DEP_HOUR + humidity + precipMM + pressure + tempC + visibility + windspeedKmph,data = trainData,ntree=100,mtry=3, proximity=TRUE)
+print(rsample.rf)
+
+importance(rsample.rf, type=2)
+varImpPlot(rsample.rf)
+
+rsample_pred=predict(rsample.rf,testData)
+```
+
