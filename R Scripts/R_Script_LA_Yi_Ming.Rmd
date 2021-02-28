@@ -1,0 +1,73 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+weather <- fread("C:/Users/mingy/Downloads/la_flights.csv")
+df <- fread('C:/Users/mingy/Downloads/la_flights_all_airlines.csv')
+```
+
+```{r}
+##Linear Regression
+la_model <- lm(DEP_DELAY~AIR_TIME+DISTANCE+Total_Cancellations+AIRLINE, data = la)
+la_model
+
+```
+
+
+```{r}
+summary(la_model)
+```
+
+```{r}
+## Linear Model for weather
+weather_model <- lm(DEP_DELAY~AIR_TIME+humidity+pressure+tempC+visibility+windspeedKmph, data = weather)
+weather_model
+```
+```{r}
+summary(weather_model)
+```
+
+#Random Forest
+
+```{r}
+#load the data
+df <- fread('C:/Users/mingy/Downloads/la_flights_all_airlines.csv')
+```
+
+
+```{r}
+str(df)
+```
+```{r}
+install.packages("ranger")
+```
+```{r}
+
+train_sub = sample(nrow(df), 3/4*nrow(df))
+train_data = df[train_sub,]
+test_data = df[-train_sub,]
+dim(train_data)
+dim(test_data)
+
+```
+```{r}
+library(ranger)
+#set.seed(1000)
+model1 <- ranger(DEP_DELAY~DISTANCE+humidity+pressure+tempC+visibility+windspeedKmph+CRS_ARR_TIME, train_data, num.trees = 500, respect.unordered.factors = 'order')
+model1
+```
+
+
+```{r}
+test_data$pred <- predict(model1, test_data)$predictions
+```
+
+```{r}
+test_data %>%
+  mutate(residual = pred - DEP_DELAY) %>%
+  summarise(rmse=sqrt(mean(residual^2)))
+```
+```
+
