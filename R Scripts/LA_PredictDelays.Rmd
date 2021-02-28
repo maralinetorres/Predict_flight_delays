@@ -1,0 +1,328 @@
+---
+title: "Predicting flight delays - Los Angeles airport"
+author: "Maraline Torres"
+date: "2/27/2021"
+output: html_document
+---
+## Introduction
+
+Flying doesn't always go smoothly. Many people have had some horror stories with weird delays but other haven't experienced this (Lucky them!). This brings us to the following question:  Wouldn't it be nice to know how much your flight will probably be delayed?
+
+That what this project will attempt to do, specifically for all airlines in Los Angeles Airport. We gathered data for flights in March 2019 and 2020. This will be a regression problem where we will try to predict delay time in number of minutes. 
+
+## Getting the data
+
+We gathered our flight data from the US Department of Transportation. We chose the following features:
+
+* DAY_OF_MONTH
+* YEAR
+* DAY_OF_WEEK
+* DEP_DELAY
+* CRS_ARR_TIME
+* CRS_ELAPSED_TIME
+* CRS_DEP_HOUR 
+* AIRLINE
+* humidity
+* precipMM
+* pressure
+* tempC
+* visibility
+* windspeedKmph 
+
+The weather variables were retrieved using the World Weather API. 
+
+## Load libraries
+```{r}
+library(data.table)
+library(ggplot2)
+library(ggthemes)
+library(scales)
+library(dplyr)
+library(glmnet)
+library(rpart) 
+library(rpart.plot)
+library(randomForest)
+library(tidyverse)
+library(caret)
+library(ipred)# for fitting bagged decision trees
+library(gbm)
+library(boot)
+
+theme_set(theme_bw())
+```
+
+## Load Dataset
+
+```{r}
+df.la <- fread("la_flights.csv")
+summary(df)
+```
+
+
+## Exploratory data analysis
+
+
+
+## Start fitting models
+
+
+### Splitting the datasets
+```{r}
+set.seed(123)
+smp_size <- floor(.80 * nrow(df.la))
+train_index <- sample(nrow(df.la), smp_size) # assign 80% of the data to train
+df.test <- df.la[-train_index,] ##not the one in train_index
+df.train <-df.la[train_index,] 
+```
+
+### Naive Regression
+
+Started doing the Naive Regression (Baseline) to have an MSE to compare to. 
+
+```{r}
+y.test.b <- df.test$DEP_DELAY
+df_la_y <- mean(df.la$DEP_DELAY)
+
+mse_baseline <- mean((y.test.b - df_la_y)^2)
+rmse_baseline <- sqrt(mse_baseline)
+rmse_baseline 
+```
+
+Our goal is to apply more advanced ML methods  to obtain a lower RMSE.
+
+### Linear Regression
+
+#### Validation set approach
+
+Fit the model and make predictions using the two data sets created earlier. 
+
+```{r}
+y.train <- df.train$DEP_DELAY
+y.test <- df.test$DEP_DELAY
+
+f1 <- as.formula(DEP_DELAY ~ DAY_OF_MONTH + YEAR + DAY_OF_WEEK + AIRLINE 
+                 + CRS_DEP_HOUR  + CRS_ARR_TIME + humidity + precipMM + pressure 
+                 + tempC + visibility + windspeedKmph)
+
+fit.lm1 <- lm(f1,df.train) 
+
+#Let's compute an MSE on the training data
+yhat.train.lm1 <- predict(fit.lm1)
+mse.train.lm1 <- mean((y.train - yhat.train.lm1)^2)
+mse.train.lm1
+
+#Let's compute an MSE on the test data
+yhat.test.lm1 <- predict(fit.lm1, df.test)
+mse.test.lm1 <- mean((y.test - yhat.test.lm1)^2)
+mse.test.lm1
+
+rmse_lm1 <- sqrt(mse.test.lm1)
+rmse_lm1
+
+```
+
+
+Create a new formula for the variables that had significant value. 
+
+```{r}
+summary(fit.lm1)
+
+f2 <- as.formula(DEP_DELAY ~ DAY_OF_MONTH + YEAR + DAY_OF_WEEK + AIRLINE 
+                 + CRS_DEP_HOUR  + CRS_ARR_TIME + humidity)
+
+fit.lm2 <- lm(f2,df.train) 
+
+
+#Let's compute an MSE on the training data
+yhat.train.lm2 <- predict(fit.lm1)
+mse.train.lm2 <- mean((y.train - yhat.train.lm2)^2)
+mse.train.lm2
+
+#Let's compute an MSE on the test data
+yhat.test.lm2 <- predict(fit.lm2, df.test)
+mse.test.lm2 <- mean((y.test - yhat.test.lm2)^2)
+mse.test.lm2
+
+rmse_lm1 <- sqrt(mse.test.lm2)
+rmse_lm1
+```
+
+#### K-folds cross validation
+
+Considered making a
+
+```{r}
+train.control <- trainControl(method = "cv", number = 10)
+#train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+model <- train(f2, data = df.la, method = "lm", trControl = train.control) # Train the model
+print(model) # Summarize the results
+```
+
+We present a similar RSME as the other formulas for linear regression. We decided that we need a more flexible model to explain our observations. 
+
+
+### Ridge Regression
+
+Ridge regression shrinks coefficients towards zero. It uses glmnet commando to shrink coefficients towards zero. We passed the predictors matrix as parameters and used alpha=0 to invoke ridge regression. 
+
+```{r}
+dd <- copy(df.la)
+dd[, test:=0] #Adds a new column with value 0
+dd[sample(nrow(dd),5000), test:=1] #Take 5k random rows and assign it to test
+dd.test <- dd[test==1]
+dd.train <- dd[test==0] #Around 33K for training
+
+f3 <- as.formula(DEP_DELAY ~ DAY_OF_MONTH + YEAR + DAY_OF_WEEK + AIRLINE 
+                 + CRS_DEP_HOUR  + CRS_ARR_TIME + humidity)
+
+#assign our response variable (target)
+y.train <- dd.train$DEP_DELAY
+y.test <- dd.test$DEP_DELAY
+
+x3.train <- model.matrix(f3, dd.train)[,-1]
+x3.test <- model.matrix(f3,dd.test)[,-1]
+
+fit.ridge <- cv.glmnet(x3.train, y.train, alpha = 0, nfolds = 10)
+
+##Test the MSE in training data
+yhat.train.ridge <- predict(fit.ridge, x5.train, s = fit.ridge$lambda.min)
+mse.train.ridge <- mean((y.train - yhat.train.ridge)^2)
+mse.train.ridge
+
+##Test the MSE test
+yhat.test.ridge <- predict(fit.ridge, x3.test, alpha = 0, s = fit.ridge$lambda.min)
+mse.test.ridge <-  mean((y.test - yhat.test.ridge)^2)
+mse.test.ridge 
+
+rsme_test_ridge <- sqrt(mse.test.ridge)
+rsme_test_ridge 
+
+```
+
+### Lasso Regression
+
+The lasso is like ridge regression – but instead of shrinking coefficients towards zero,it tries to set as many as it can to zero.
+
+```{r}
+dd <- copy(df.la)
+dd[, test:=0] 
+dd[sample(nrow(dd),5000), test:=1]
+dd.test <- dd[test==1]
+dd.train <- dd[test==0] #Around 33K for training
+
+y.train <- dd.train$DEP_DELAY
+y.test <- dd.test$DEP_DELAY
+
+f4 <- as.formula(DEP_DELAY ~ DAY_OF_MONTH + YEAR + DAY_OF_WEEK + AIRLINE 
+                 + CRS_DEP_HOUR  + CRS_ARR_TIME + humidity)
+
+x4.train <- model.matrix(f4, dd.train)[,-1]
+x4.test <- model.matrix(f4,dd.test)[,-1]
+
+fit.lasso <- cv.glmnet(x4.train, y.train, alpha = 1, nfolds = 10)
+
+##Test the MSE in training data
+yhat.train.lasso <- predict(fit.lasso, x4.train, s = fit.lasso$lambda.min)
+mse.train.lasso <- mean((y.train - yhat.train.lasso)^2)
+mse.train.lasso
+
+##Test the MSE test
+yhat.test.lasso <- predict(fit.lasso, x4.test, alpha = 0, s = fit.lasso$lambda.min)
+mse.test.lasso <-  mean((y.test - yhat.test.ridge)^2)
+mse.test.lasso 
+
+rsme_lasso <- sqrt(mse.test.lasso)
+
+```
+
+
+### DECISION TREE MODEL
+
+```{r}
+set.seed(123)
+smp_size <- floor(.80 * nrow(df.la))
+train_index <- sample(nrow(df.la), smp_size) 
+df.test <- df.la[-train_index,] ##not the one in train_index
+df.train <-df.la[train_index,] 
+
+y.train <- df.train$DEP_DELAY
+y.test <- df.test$DEP_DELAY
+
+f5 <- as.formula(DEP_DELAY ~ DAY_OF_MONTH + YEAR + CRS_DEP_HOUR  + CRS_ARR_TIME 
+                 + CRS_ELAPSED_TIME + humidity + precipMM)
+
+#grow tree
+fit.tree <- rpart(f5, data = df.train,control = rpart.control(cp = 0.001), method = "anova")
+printcp(fit.tree) # display the results
+plotcp(fit.tree) # visualize cross-validation results
+#A good choice of cp for pruning is often the leftmost value 
+#for which the mean lies below the horizontal line." PS library(rpart)
+summary(fit.tree) # detailed summary of splits
+
+# create additional plots
+par(mfrow=c(1,2)) # two plots on one page
+rsq.rpart(fit.tree) # visualize cross-validation results  
+
+# plot tree
+rpart.plot(fit.tree)
+rpart.plot(fit.tree, type = 1)
+
+# prune the tree
+pfit<- prune(fit.tree, cp=0.0028032) # from cptable   
+rpart.plot(pfit)
+summary(pfit)
+
+yhat.train.tree <- predict(pfit, df.train) 
+mse.train.tree <- mean((y.train - yhat.train.tree) ^ 2)
+mse.train.tree
+
+yhat.test.tree <- predict(pfit, df.test) 
+mse.test.tree <- mean((y.test - yhat.test.tree) ^ 2)
+mse.test.tree
+
+rmse_tree_test <- sqrt(mse.test.tree)
+rmse_tree_test 
+
+
+```
+
+
+### Random Forrest 
+
+```{r}
+dd <- copy(df.la)
+dd[, test:=0]
+dd[sample(nrow(dd), 5000), test:=1] # take 5K random rows and stick them in the test
+dd.test <- dd[test==1]
+dd.train <- dd[test==0]
+
+dd.train.sample.size <- 25000
+dd.train.sample <- dd.train[sample(nrow(dd.train), dd.train.sample.size)]
+
+y.train <- dd.train$DEP_DELAY
+y.train.sample <- dd.train.sample$DEP_DELAY
+y.test <- dd.test$DEP_DELAY
+
+f6 <- as.formula(DEP_DELAY ~ DAY_OF_MONTH + AIRLINE + CRS_DEP_HOUR  + CRS_ARR_TIME 
+                 + CRS_ELAPSED_TIME)
+fit.rndfor <- randomForest(f6, dd.train,ntree=500, do.trace=F)
+
+print(fit.rndfor) #View results
+importance(fit.rndfor)
+#We can check which variables are most predictive using a variable importance plot
+varImpPlot(fit.rndfor) #Arrival time, CRS Elapsed time, Depature hour, Airline and Day of Month
+
+
+yhat.train.rndfor <- predict(fit.rndfor, dd.train.sample) 
+mse.train.rndfor <- mean((y.train.sample - yhat.train.rndfor) ^ 2)
+mse.train.rndfor
+
+yhat.test.rndfor <- predict(fit.rndfor, dd.test) 
+mse.test.rndfor <- mean((y.test - yhat.test.rndfor) ^ 2)
+mse.test.rndfor
+
+rmse.test.rndfor <- sqrt(mse.test.rndfor)
+rmse.test.rndfor
+
+```
+
