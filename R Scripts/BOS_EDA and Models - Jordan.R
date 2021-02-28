@@ -306,7 +306,7 @@ boston_model[, PREDICTED := predicted]
 ## Let's see how the model predicts delays as opposed to small ones
 
 
-bos_grouping <- boston_model[DEP_DELAY > 100]
+bos_grouping <- boston_model[DEP_DELAY > 90]
 mse.grouping <- mean((bos_grouping$DEP_DELAY - bos_grouping$PREDICTED)^2)
 mse.grouping
 
