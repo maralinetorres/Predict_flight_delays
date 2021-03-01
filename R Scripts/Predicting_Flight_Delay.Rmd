@@ -1,0 +1,822 @@
+---
+title: "Predicting Flight Delays"
+author: 'BA-810 Team - Jordan Grose, Maraline Torres, Barbara Liang, Yi Ming, Cheng Chen, Jingjing Lu'
+date: "3/2/2021"
+output:
+  html_document: default
+  pdf_document: default
+---
+## Introduction
+
+Flying doesn't always go smoothly. Many people have horror stories of extremely long delays, but others haven't experienced this experience (Lucky them!). This brings us to the following question:  Wouldn't it be nice to know how much your flight will likely be delayed?
+
+This project will attempt to predict flight delays in minutes, specifically for all airlines in the Los Angeles, Boston and Atlanta airports. We will employ a number of different models to try to solve this, including regressions, ridge & lasso, decision trees and random forest.
+
+## Getting the data
+
+We gathered our flight data from the [US Department of Transportation](https://www.bts.gov/) for March 2019 and 2020. We chose the following features:
+
+* DAY_OF_MONTH
+* YEAR
+* DAY_OF_WEEK
+* DEP_DELAY: Departure Delay in minutes
+* CRS_ARR_TIME: Scheduled Arrival time for flight (not actual arrival time)
+* CRS_ELAPSED_TIME: Scheduled/Expected flight duration
+* CRS_DEP_HOUR: Scheduled hour of flight departure
+* AIRLINE: Airline maker
+* humidity: Humidity for the day and location
+* precipMM: Precipitation for the day and location
+* pressure: Air pressure for the day and location
+* tempC: Average temperature for the day and location
+* visibility: Visibility index for the day and location
+* windspeedKmph: Wind speed for the day and location
+
+The weather variables were retrieved using the World Weather API. We created a new column called "Total_Cancellations" which means the number of cancellations the day before in the specific airport and airline. However, we decided to remove the variable because it didn't have predictive value.
+
+
+```{r echo=FALSE, message=FALSE, error=FALSE, warning=FALSE}
+library(data.table)
+library(ggplot2)
+library(ggthemes)
+library(scales)
+library(dplyr)
+library(glmnet)
+library(rpart) 
+library(rpart.plot)
+library(randomForest)
+library(tidyverse)
+library(caret)
+library(ipred)# for fitting bagged decision trees
+library(gbm)
+library(boot)
+
+theme_set(theme_bw())
+```
+
+## Load Dataset 
+
+The "df" contains observations for the three airports. The other three are subset data tables for each airport respectively.
+
+```{r}
+df <- fread("C:/Users/jorda/Documents/BU/flights.csv")
+df.la <- df[ORIGIN == 'LAX', ]
+df.bos <- df[ORIGIN == 'BOS', ]
+df.atl <- df[ORIGIN == 'ATL', ]
+summary(df)
+```
+
+
+## Exploratory data analysis
+
+
+```{r}
+delayed <- df[DEP_DELAY > 0, .(number_delays = .N), by = ORIGIN]
+not_delayed <- df[DEP_DELAY <= 0,.(number_on_time = .N), by= ORIGIN]
+total <- merge(delayed, not_delayed, by='ORIGIN')
+total$ORIGIN <- as.factor(total$ORIGIN)
+dat_long <- total %>%
+  gather("Stat", "Value", -ORIGIN)
+setDT(dat_long)
+ggplot(dat_long, aes(x = ORIGIN, y = Value, fill = Stat)) +
+  geom_col(position = "dodge") + ylab('Number of flights')  + ggtitle("Delay vs. On-time flights")
+```
+   
+   
+Across all three locations, the majority of flights are on time. The trick is being able to predict which flights will be delayed.
+
+   
+```{r}
+flights_by_year <-df[,.(Number_flights = .N), by =.(ORIGIN, YEAR)]
+flights_by_year$YEAR <- as.factor(flights_by_year$YEAR)
+
+ggplot(flights_by_year, aes(x = ORIGIN, y = Number_flights, fill =YEAR)) +
+  geom_col(position = "dodge") + ylab('Number of flights') + ggtitle("Number of flights - 2019 vs. 2020")
+
+```
+
+
+
+```{r}
+weekly_delay <-df[,.(mean_delay = mean(DEP_DELAY)), by =.(DAY_OF_WEEK = df$DAY_OF_WEEK, ORIGIN = df$ORIGIN)]
+ggplot(weekly_delay,aes(x = DAY_OF_WEEK, y = mean_delay, color=ORIGIN)) + geom_point() + geom_line()  + ylab('Average Delay') + xlab('Day of the week') + ggtitle("Average delay in days of the week")
+```
+
+   
+Delays tend to increase later in the week. This could be because airports are busier on the weekend. We will likely want to keep Day of Week as a predictor in our models.   
+
+
+
+```{r}
+day_month_delay <-  df[,.(mean_delay = mean(DEP_DELAY)), by =.(DAY_OF_MONTH = DAY_OF_MONTH, ORIGIN = ORIGIN)]
+ggplot(day_month_delay,aes(x = DAY_OF_MONTH, y = mean_delay, color = ORIGIN)) + geom_point() + geom_line() + ylab('Average Delay') + xlab('Day of the month') + ggtitle("Average delay in days of the month")
+
+```
+
+  
+Boston has some outliers skewing the avg delay. Otherwise, all three locations share similar trends across the month.  
+
+
+```{r}
+distance_delay_weekly <- df.la[,.(delay = mean(DEP_DELAY), dist = mean(DISTANCE)), by ='DAY_OF_WEEK']
+ggplot(distance_delay_weekly,aes(x = dist, y = delay)) + geom_point() + geom_smooth(method = "lm") + ggtitle("Los Angeles - Average Departure and distance by day of the week") + ylab("Average Departure Delay") + xlab("Average Flight Distance")
+
+distance_delay_airline <- df.la[,.( delay = mean(DEP_DELAY), dist = mean(DISTANCE)), by ='AIRLINE']
+ggplot(distance_delay_airline,aes(x = dist, y = delay)) + geom_point() + geom_smooth(method = "lm") + ggtitle("Los Angeles - Average Departure and flight distance by airline") + ylab("Average Departure Delay") + xlab("Average Flight Distance")
+
+```
+
+   
+While Distance seems to have a positive relationship with delays, it is not very strong.  
+
+## Models for each airport
+
+In this section, we present many of our models for each airport location and highlight which perform best (some models' code may be excluded in order to keep the length of the document down!)
+
+### Los Angeles Airport
+
+```{r echo=FALSE}
+set.seed(123)
+smp_size <- floor(.80 * nrow(df.la))
+train_index <- sample(nrow(df.la), smp_size) # assign 80% of the data to train
+df.test <- df.la[-train_index,] ##not the one in train_index
+df.train <-df.la[train_index,] 
+```
+
+#### Naive Regression
+
+Started doing the Naive Regression (Baseline) to have an MSE to compare to. 
+
+```{r}
+set.seed(123)
+y.test.b <- df.test$DEP_DELAY
+df_la_y <- mean(df.la$DEP_DELAY)
+
+mse_baseline <- mean((y.test.b - df_la_y)^2)
+rmse_baseline <- sqrt(mse_baseline)
+mse_baseline
+rmse_baseline 
+```
+
+Our goal is to apply more advanced ML methods to obtain a lower RMSE.
+
+#### Linear Regression
+
+##### Validation set approach
+
+Fit the model and make predictions using the train & test data sets. 
+
+```{r}
+y.train.lm <- df.train$DEP_DELAY
+y.test.lm <- df.test$DEP_DELAY
+
+f1 <- as.formula(DEP_DELAY ~ DAY_OF_MONTH + YEAR + DAY_OF_WEEK + AIRLINE 
+                 + CRS_DEP_HOUR  + CRS_ARR_TIME + humidity + precipMM + pressure 
+                 + tempC + visibility + windspeedKmph)
+
+fit.lm1 <- lm(f1,df.train) 
+
+#Let's compute an MSE on the training data
+yhat.train.lm1 <- predict(fit.lm1)
+mse.train.lm1 <- mean((y.train.lm - yhat.train.lm1)^2)
+mse.train.lm1
+
+#Let's compute an MSE on the test data
+yhat.test.lm1 <- predict(fit.lm1, df.test)
+mse.test.lm1 <- mean((y.test.lm - yhat.test.lm1)^2)
+mse.test.lm1
+
+rmse_lm1 <- sqrt(mse.test.lm1)
+rmse_lm1
+
+```
+
+##### K-folds cross validation
+
+Considered the LOOCV method but it was too much computational cost. We decided to do the K-folds approach. 
+
+```{r}
+train.control <- trainControl(method = "cv", number = 10)
+#train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+model <- train(f1, data = df.test, method = "lm", trControl = train.control) # Train the model
+print(model) # Summarize the results
+```
+
+Got a lower RMSE using K-means fold cross validation. However, we decided that we need a more flexible model to yield a better MSE. 
+
+
+#### Ridge Regression
+
+Ridge regression shrinks coefficients towards zero. We used glmnet command to shrink coefficients towards zero. We passed the predictors matrix as parameters and used alpha=0 to invoke ridge regression. 
+
+```{r}
+dd <- copy(df.la)
+dd[, test:=0] #Adds a new column with value 0
+dd[sample(nrow(dd),5000), test:=1] #Take 5k random rows and assign it to test
+dd.test <- dd[test==1]
+dd.train <- dd[test==0] #Around 33K for training
+
+#assign our response variable (target)
+y.train.r <- dd.train$DEP_DELAY
+y.test.r <- dd.test$DEP_DELAY
+
+x1.train <- model.matrix(f1, dd.train)[,-1]
+x1.test <- model.matrix(f1,dd.test)[,-1]
+
+fit.ridge <- cv.glmnet(x1.train, y.train.r, alpha = 0, nfolds = 10)
+
+##Test the MSE in training data
+yhat.train.ridge <- predict(fit.ridge, x1.train, s = fit.ridge$lambda.min)
+mse.train.ridge <- mean((y.train.r - yhat.train.ridge)^2)
+mse.train.ridge
+
+##Test the MSE test
+yhat.test.ridge <- predict(fit.ridge, x1.test, alpha = 0, s = fit.ridge$lambda.min)
+mse.test.ridge <-  mean((y.test.r - yhat.test.ridge)^2)
+mse.test.ridge 
+
+rsme_test_ridge <- sqrt(mse.test.ridge)
+rsme_test_ridge 
+
+```
+
+Ridge Regression gives the lowest MSE for Los Angeles airport with +- `r rsme_test_ridge`. This make sense because we have high variance in the data set mainly because of multiple outliers representing longer/weird delays.
+
+This is our best performance yet. Let's see the optimal lambda and the coefficients. 
+
+```{r}
+optimal_lambda <- fit.ridge$lambda.min
+coef(fit.ridge, s = optimal_lambda)
+```
+
+The optimal lambda is `r optimal_lambda`. 
+
+
+
+#### Lasso Regression
+
+The lasso is like ridge regression – but instead of shrinking coefficients towards zero,it tries to set as many as it can to zero.
+
+```{r}
+dd.lasso <- copy(df.la)
+dd.lasso[, test:=0] 
+dd.lasso[sample(nrow(dd.lasso),5000), test:=1]
+dd.test.l <- dd.lasso[test==1]
+dd.train.l <- dd.lasso[test==0] #Around 33K for training
+
+y.train.lasso <- dd.train.l$DEP_DELAY
+y.test.lasso <- dd.test.l$DEP_DELAY
+
+x2.train <- model.matrix(f1, dd.train.l)[,-1]
+x2.test <- model.matrix(f1,dd.test.l)[,-1]
+
+fit.lasso <- cv.glmnet(x2.train, y.train.lasso, alpha = 1, nfolds = 10)
+
+##Test the MSE in training data
+yhat.train.lasso <- predict(fit.lasso, x2.train, s = fit.lasso$lambda.min)
+mse.train.lasso <- mean((y.train.lasso - yhat.train.lasso)^2)
+mse.train.lasso
+
+##Test the MSE test
+yhat.test.lasso <- predict(fit.lasso, x2.test, alpha = 0, s = fit.lasso$lambda.min)
+mse.test.lasso <-  mean((y.test.lasso - yhat.test.ridge)^2)
+mse.test.lasso 
+
+rmse_lasso <- sqrt(mse.test.lasso)
+rmse_lasso
+```
+
+
+#### Decision Tree Model
+
+```{r}
+smp_size <- floor(.75 * nrow(df.la))
+train_index <- sample(nrow(df.la), smp_size) 
+df.test.dt <- df.la[-train_index,] ##not the one in train_index
+df.train.dt <-df.la[train_index,] 
+
+y.train.dt <- df.train.dt$DEP_DELAY
+y.test.dt <- df.test.dt$DEP_DELAY
+
+f5 <- as.formula(DEP_DELAY ~ DAY_OF_MONTH + YEAR + CRS_DEP_HOUR  + CRS_ARR_TIME 
+                 + CRS_ELAPSED_TIME + humidity + precipMM)
+
+#grow tree
+fit.tree <- rpart(f1, data = df.train.dt,control = rpart.control(cp = 0.001), method = "anova")
+printcp(fit.tree) # display the results
+plotcp(fit.tree) # visualize cross-validation results
+```
+
+A good choice of cp for pruning is often the leftmost value for which the mean lies below the horizontal line.
+
+
+```{r}
+# plot tree
+rpart.plot(fit.tree, type = 1)
+```
+
+```{r}
+# prune the tree
+optimal_cp <- fit.tree$cptable[which.min(fit.tree$cptable[,"xerror"]),"CP"]
+pfit<- prune(fit.tree, cp=optimal_cp) # from cptable   
+rpart.plot(pfit)
+summary(pfit)
+
+yhat.train.tree <- predict(pfit, df.train.dt) 
+mse.train.tree <- mean((y.train.dt - yhat.train.tree) ^ 2)
+mse.train.tree
+
+yhat.test.tree <- predict(pfit, df.test.dt) 
+mse.test.tree <- mean((y.test.dt - yhat.test.tree) ^ 2)
+mse.test.tree
+
+rmse_tree_test <- sqrt(mse.test.tree)
+rmse_tree_test 
+
+```
+
+The RSME test using Decision Tree  is `r rmse_tree_test`. We were unable to yield a lower RMSE than the one using Ridge Regression.
+
+
+#### Random Forrest 
+
+For Random Forrest, we tried different formulas but decided 'f6' yield the lower MSE.
+
+```{r}
+smp_size <- floor(.75 * nrow(df.la))
+train_index <- sample(nrow(df.la), smp_size) 
+df.test.rf <- df.la[-train_index,] ##not the one in train_index
+df.train.rf <-df.la[train_index,] 
+
+y.train.rf <- df.train.rf$DEP_DELAY
+y.test.rf <- df.test.rf$DEP_DELAY
+
+f6 <- as.formula(DEP_DELAY ~ DAY_OF_MONTH + AIRLINE + CRS_DEP_HOUR  + CRS_ARR_TIME 
+                 + CRS_ELAPSED_TIME)
+fit.rndfor <- randomForest(f6, df.train.rf,ntree=500, do.trace=F)
+
+print(fit.rndfor) #View results
+importance(fit.rndfor)
+#We can check which variables are most predictive using a variable importance plot
+varImpPlot(fit.rndfor) #Arrival time, CRS Elapsed time, Depature hour, Airline and Day of Month
+
+```
+
+
+For Random Forrest, the top three predictors are Arrival Time, Elapsed Time and Day of Month.
+
+
+```{r}
+#Calculate the Train MSE
+yhat.train.rndfor <- predict(fit.rndfor, df.train.rf) 
+mse.train.rndfor <- mean((y.train.rf - yhat.train.rndfor) ^ 2)
+mse.train.rndfor
+
+#Calculate the Test MSE
+yhat.test.rndfor <- predict(fit.rndfor, df.test.rf) 
+mse.test.rndfor <- mean((y.test.rf - yhat.test.rndfor) ^ 2)
+mse.test.rndfor
+
+rmse.test.rndfor <- sqrt(mse.test.rndfor)
+rmse.test.rndfor
+```
+
+
+
+#### Segmenting LA flights
+
+Since Ridge regression yielded our best results, let's look back at how this LA model performs on various segments of our data set (remember, our Ridge Regression had a Test MSE of 1284.64, or 35 mins, for the test set of LA flights):
+
+
+```{r}
+# apply Ridge model to the entire LA data set, not just the test group
+dd[, test := NULL]
+LA_model <- dd
+X_Ridge <- model.matrix(f1, LA_model)[, -1]
+predicted <- predict(fit.ridge, X_Ridge, s=fit.ridge$lambda.min)
+mse.predicted <- mean((LA_model$DEP_DELAY - predicted)^2)
+mse.predicted # this is our MSE with the trained LA Ridge regression on the entire LA dataset
+
+LA_model[, PREDICTED := predicted]
+
+```
+
+This is our MSE from our best LA model (ridge) on the entire LA data set. Let's see how the model predicts big delays as opposed to small ones:
+
+```{r}
+# Big Delays (larger than 90 minutes)
+la_grouping1 <- LA_model[DEP_DELAY > 90]
+mse.grouping1 <- mean((la_grouping1$DEP_DELAY - la_grouping1$PREDICTED)^2)
+mse.grouping1
+
+
+# Smaller Delays (less than 90 minutes)
+la_grouping2 <- LA_model[DEP_DELAY < 90]
+mse.grouping2 <- mean((la_grouping2$DEP_DELAY - la_grouping2$PREDICTED)^2)
+mse.grouping2
+```
+
+We can see that our Ridge model has a very high MSE (43,325.29), way higher than our Naive baseline, when we segment the flights to only include those that have a delay greater than 90 minutes. On the other hand, our model has an extremely low MSE when we segment the flights to only include those that have a delay of less than 90 minutes. We expect this to be similar across all models and can conclude that our model does a very good job of predicting smaller delays, but a poor job of predicting large delays. This could be because our feature set may not capture delay variance for large delays very well. Perhaps it is due to randomness, or perhaps there are key events occurring that lead to larger delays that we cannot incorporate into our model (lateness of previous flight, finding a new airplane, luggage or airport issues, etc...) 
+
+
+
+### Boston Models  
+
+```{r echo=FALSE, message=FALSE, error=FALSE, warning=FALSE}
+# preprocessing the boston data
+# imports
+
+
+library(data.table)
+library(ggplot2)
+library(ggthemes)
+library(scales)
+library(dplyr)
+library(glmnet)
+library(tidyr)
+library(chron)
+library(hms)
+library(rpart) 
+library(rpart.plot)
+library(randomForest)
+library(tidyverse)
+library(caret)
+library(ipred)
+library(gbm)
+library(boot)
+theme_set(theme_bw())
+
+
+##Load dataset
+df <- fread("C:/Users/jorda/iCloudDrive/Documents/BU MSBA COURSES/BA810/flights-All_airlines.csv")
+df$DAY_OF_MONTH <- as.factor(df$DAY_OF_MONTH)
+df$YEAR <- as.factor(df$YEAR)
+df$DAY_OF_WEEK <- as.factor(df$DAY_OF_WEEK)
+
+
+
+# dropping columns for models
+df[,MKT_CARRIER_AIRLINE_ID := NULL]
+df[,MKT_CARRIER := NULL]
+df[,TAIL_NUM := NULL]
+df[,ORIGIN_CITY_NAME := NULL]
+df[,ORIGIN_STATE_ABR := NULL]
+df[,DEST_CITY_NAME := NULL]
+df[,DEST_STATE_ABR := NULL]
+df[,DEST_STATE_NM := NULL]
+df[,DEP_TIME := NULL]
+df[,CRS_ARR_TIME := NULL]
+df[,ARR_TIME := NULL]
+df[,ARR_DELAY := NULL]
+df[,CANCELLED := NULL]
+df[,DIVERTED := NULL]
+df[,CRS_ELAPSED_TIME := NULL]
+df[,ACTUAL_ELAPSED_TIME := NULL]
+df[,AIR_TIME := NULL]
+df[,DIV_AIRPORT_LANDINGS := NULL]
+df[,DIV_REACHED_DEST := NULL]
+df[,CODE := NULL]
+df[,EARLY_AM := NULL]
+df[,AM := NULL]
+df[,PM := NULL]
+df[,LATE_PM := NULL]
+
+
+
+# subsetting for just Boston flights
+bos <- df[ORIGIN == "BOS"]
+
+
+
+# getting hour buckets from scheduled flight departure
+bos$CRS_DEP_TIME <- as.character(bos$CRS_DEP_TIME)
+for( i in 1:nrow(bos)){
+  x <- bos[i,]
+  number_string = nchar(x$CRS_DEP_TIME)
+  if(number_string == 3){
+    bos[i,CRS_DEP_TIME := paste0("0", CRS_DEP_TIME)]
+  }else if(number_string == 2){
+    bos[i,CRS_DEP_TIME := paste0("0", CRS_DEP_TIME)]
+    bos[i,CRS_DEP_TIME := paste0("0", CRS_DEP_TIME)]
+  }else if(number_string == 1){
+    bos[i,CRS_DEP_TIME := paste0("0", CRS_DEP_TIME)]
+    bos[i,CRS_DEP_TIME := paste0("0", CRS_DEP_TIME)]
+    bos[i,CRS_DEP_TIME := paste0("0", CRS_DEP_TIME)]
+  }
+}
+
+d1 <- strptime(bos$CRS_DEP_TIME, format = "%H%M")
+d2 <- format(d1, format = "%H:%M:%S")
+bos[,CRS_DEP_TIME_Formatted := d2]
+bos$CRS_DEP_TIME_Formatted <- as.factor(bos$CRS_DEP_TIME_Formatted)
+bos[,CRS_DEP_HOUR := hour(as.hms(as.character(bos$CRS_DEP_TIME_Formatted)))]
+
+
+
+### Adding in weather data ###
+weather_bos <- fread("C:/Users/jorda/iCloudDrive/Documents/BU MSBA COURSES/BA810/boston-weather.csv")
+
+
+weather_bos$day <- as.factor(weather_bos$day)
+weather_bos$year <- as.factor(weather_bos$year)
+
+boston <- merge(bos, weather_bos, all.x =TRUE, by.x = c('DAY_OF_MONTH','YEAR'), by.y = c('day','year'))
+boston[,location := NULL]
+boston[, date_time := NULL]
+
+```
+
+Our first model is a Naive Linear Regression to get a baseline of MSE performance for future models.
+
+```{r}
+### NAIVE LINEAR REGRESSION ###
+
+yhat <- mean(boston$DEP_DELAY)
+boston_NLR <- boston
+boston_NLR[, yhat := yhat]
+
+mse.NLR <- mean((boston_NLR$DEP_DELAY - boston_NLR$yhat)^2)
+mse.NLR
+```
+
+Next we'll try three linear regression models with a different set of predictors in each to get a sense of which predictors lead to better performance.
+
+```{r message=FALSE, warning=FALSE}
+### LINEAR REGRESSION ###
+
+set.seed(810)
+boston_LM1 <- boston
+
+# train/test split
+test_index <- sample(nrow(boston_LM1), 4678) # this represents an 80/20 train/test split on the entire boston dataset
+# now split
+dd.test <- boston_LM1[test_index,]
+dd.train <- boston_LM1[-test_index,]
+
+
+# LM Formulas
+f1 <- as.formula(DEP_DELAY ~ DAY_OF_MONTH + DAY_OF_WEEK + DEST + DISTANCE + AIRLINE + CRS_DEP_HOUR + humidity + precipMM + pressure + tempC + visibility + windspeedKmph)
+
+f2 <- as.formula(DEP_DELAY ~ DAY_OF_MONTH + DAY_OF_WEEK + DEST + DISTANCE + AIRLINE + CRS_DEP_HOUR + visibility + windspeedKmph)
+
+f3 <- as.formula(DEP_DELAY ~ DAY_OF_MONTH + DAY_OF_WEEK + DISTANCE + CRS_DEP_HOUR + humidity + precipMM + pressure + tempC + visibility + windspeedKmph)
+
+
+
+y.train <- dd.train$DEP_DELAY
+y.test <- dd.test$DEP_DELAY
+
+
+# Fitting the LM model
+fit.lm1 <- lm(f1, dd.train)   # all predictors
+fit.lm2 <- lm(f2, dd.train)   # removing humidity, precip, pressure, temp
+fit.lm3 <- lm(f3, dd.train)   # removing airline and destination 
+
+
+# compute MSEs for training LMs
+# LM1
+yhat.train.lm1 <- predict(fit.lm1)
+mse.train.lm1 <- mean((y.train - yhat.train.lm1)^2)
+
+
+# LM2
+yhat.train.lm2 <- predict(fit.lm2)
+mse.train.lm2 <- mean((y.train - yhat.train.lm2)^2)
+
+
+# LM3
+yhat.train.lm3 <- predict(fit.lm3)
+mse.train.lm3 <- mean((y.train - yhat.train.lm3)^2)
+
+
+# Test MSE
+# LM1
+yhat.test.lm1 <- predict(fit.lm1, dd.test)
+mse.test.lm1 <- mean((y.test - yhat.test.lm1)^2)
+
+
+# LM2
+yhat.test.lm2 <- predict(fit.lm2, dd.test)
+mse.test.lm2 <- mean((y.test - yhat.test.lm2)^2)
+
+
+# LM3
+yhat.test.lm3 <- predict(fit.lm3, dd.test)
+mse.test.lm3 <- mean((y.test - yhat.test.lm3)^2)
+
+```
+
+Results:  
+**Train MSE LM1:** `r mse.train.lm1`\
+**Train MSE LM2:** `r mse.train.lm2`\
+**Train MSE LM3:** `r mse.train.lm3`\
+**Test MSE LM1:** `r mse.test.lm1`\
+**Test MSE LM2:** `r mse.test.lm2`\
+**Test MSE LM3:** `r mse.test.lm3`
+
+
+While the Train MSE LM1 was our lowest train MSE, the test MSE for this model was still pretty high with MSE of 1803.11. We expect this might be due to multicolinearity among predictors. 
+Let's try using Ridge, Lasso and Elastic Net Regressions to control for multicolinearity as we saw our best results in the LA dataset using these models. We will use all relevant predictors for these regressions because LM1 (all predictors) performed best for linear regression.
+
+
+```{r message=FALSE, warning=FALSE, error=FALSE}
+#### RIDGE REGRESSION ####
+
+boston <- boston[, yhat := NULL]
+boston_RR <- boston
+
+# Random Train/Test split
+boston_RR[, test:=0]
+boston_RR[sample(nrow(boston_RR), 4678), test:=1]
+
+RR.test <- boston_RR[test==1]
+RR.train <- boston_RR[test==0]
+
+
+x1.train <- model.matrix(f1, RR.train)[, -1]
+y.train <- RR.train$DEP_DELAY
+
+
+x1.test <- model.matrix(f1, RR.test)[, -1]
+y.test <- RR.test$DEP_DELAY
+
+
+fit.ridge <- cv.glmnet(x1.train, y.train, alpha = 0, nfolds = 10)
+
+
+# Ridge Train MSE
+yhat.train.ridge <- predict(fit.ridge, x1.train, s = fit.ridge$lambda.min)
+mse.train.ridge <- mean((y.train - yhat.train.ridge)^2)
+
+
+# Ridge Test MSE
+yhat.test.ridge <- predict(fit.ridge, x1.test, s = fit.ridge$lambda.min)
+mse.test.ridge <- mean((y.test - yhat.test.ridge)^2)
+
+
+
+#### LASSO REGRESSION ####
+
+
+fit.lasso <- cv.glmnet(x1.train, y.train, alpha = 1, nfolds = 10)
+
+
+# Lasso Train MSE
+yhat.train.lasso <- predict(fit.lasso, x1.train, s = fit.lasso$lambda.min)
+mse.train.lasso <- mean((y.train - yhat.train.lasso)^2)
+
+
+# Lasso Test MSE
+yhat.test.lasso <- predict(fit.lasso, x1.test, s = fit.lasso$lambda.min)
+mse.test.lasso <- mean((y.test - yhat.test.lasso)^2)
+
+
+
+#### ELASTIC NET ####
+
+
+fit.net <- cv.glmnet(x1.train, y.train, alpha = 0.5, nfolds = 10)
+
+
+# Elastic Net Train MSE
+yhat.train.net <- predict(fit.net, x1.train, s = fit.net$lambda.min)
+mse.train.net <- mean((y.train - yhat.train.net)^2)
+
+
+# Elastic Net Test MSE
+yhat.test.net <- predict(fit.net, x1.test, s = fit.net$lambda.min)
+mse.test.net <- mean((y.test - yhat.test.net)^2)
+
+```
+
+Results:  
+**Ridge Train MSE:** `r mse.train.ridge`\
+**Ridge Test MSE:** `r mse.test.ridge`\
+**Lasso Train MSE:** `r mse.train.lasso`\
+**Lasso Test MSE:** `r mse.test.lasso`\
+**Net Train MSE:** `r mse.train.net`\
+**Net Test MSE:** `r mse.test.net`\
+
+
+The Lasso Regression with Test MSE of 1386.19 (37.2 minutes) was the best performing model. This is consistent with our LA Ridge regressions being our best performing models. Let's now try running Decision Tree and Random Forest models and compare these results with our Lasso Regression MSE.
+
+```{r}
+### DECISION TREE ###
+
+# split the dataset into train/test
+set.seed(2021)
+index=sample(2,nrow(boston),replace = TRUE,prob=c(0.8,0.2))
+trainData<-boston[index==1,]  
+testData<-boston[index==2,]
+
+# fitting the decision tree
+tree <- rpart(DEP_DELAY ~ DAY_OF_MONTH + DAY_OF_WEEK + DEST + DISTANCE + AIRLINE + CRS_DEP_HOUR + humidity + precipMM + pressure + tempC + visibility + windspeedKmph, data = trainData, method = "anova")
+rpart.plot(tree)
+plotcp(tree)
+tree$cptable
+
+# prune the tree with cp = 0.01
+prune.tree <- prune(tree, cp = 0.01)
+prp(prune.tree, type = 1, extra = 1, under = TRUE, split.font = 2, varlen = -10)
+
+# evaluate tree performance
+pred <- predict(prune.tree, newdata = testData)
+
+mse.tree <- mean((pred - testData$DEP_DELAY ) ^ 2)
+print(mse.tree)
+
+Values1 <- data.frame(obs = testData$DEP_DELAY, pred = pred)
+defaultSummary(Values1)
+
+```
+
+The Decision Tree yields an MSE of 1339.09 for the Boston dataset, which is our lowest MSE yet! According to the tree, visibility and the time of the flight are the most significant predictors of departure delay. Let's see how three Random Forest models compares.
+
+```{r}
+trainData <- na.omit(trainData)
+
+rf_ntree <- randomForest(DEP_DELAY ~ DAY_OF_MONTH + DAY_OF_WEEK + DEST + DISTANCE + AIRLINE + CRS_DEP_HOUR + humidity + precipMM + pressure + tempC + visibility + windspeedKmph,data = trainData,ntree=500, proximity=TRUE) 
+plot(rf_ntree)
+
+rsample.rf=randomForest(DEP_DELAY ~ DAY_OF_MONTH + DAY_OF_WEEK + DEST + DISTANCE + AIRLINE + CRS_DEP_HOUR + humidity + precipMM + pressure + tempC + visibility + windspeedKmph,data = trainData,ntree=60,mtry=2, proximity=TRUE) 
+print(rsample.rf)
+
+rsample.rf=randomForest(DEP_DELAY ~ DAY_OF_MONTH + DAY_OF_WEEK + DEST + DISTANCE + AIRLINE + CRS_DEP_HOUR + humidity + precipMM + pressure + tempC + visibility + windspeedKmph,data = trainData,ntree=100,mtry=3, proximity=TRUE)
+print(rsample.rf)
+
+importance(rsample.rf, type=2)
+varImpPlot(rsample.rf)
+
+rsample_pred=predict(rsample.rf,testData)
+```
+
+
+Our last Random forest model returns an MSE of 1335.87, our lowest MSE yet. We can see that the optimal number of trees is around 100. We are conscious that increasing the number of trees will result in higher variance in our results going forward, so we want to select a number of trees that both minimizes MSE and keeps Variance as low as possible. We believe this will be 100 trees, with an MSE of 1335.87 (36.5 minutes) based on the Boston data. Again, the random forest model places visibility and departure time as being the most significant predictors for departure delay.
+
+
+
+
+#### Segmenting Boston flights
+While Random Forest yielded our best results, let's look back at our Lasso Regression to test various segments of our data set, while keeping our Lasso predicted values to ultimately calculate MSE for various Boston flights (remember, our Lasso Regression had a Test MSE of 1386.19, or 37 mins, for the test set of boston flights):
+
+```{r}
+# apply Lasso model to the entire Boston data set, not just the test group
+boston[, test := NULL]
+boston_model <- boston
+X_lasso <- model.matrix(f1, boston_model)[, -1]
+predicted <- predict(fit.lasso, X_lasso, s=fit.lasso$lambda.min)
+mse.predicted <- mean((boston_model$DEP_DELAY - predicted)^2)
+mse.predicted # this is our MSE with the trained Boston Lasso regression on the entire Boston dataset
+
+boston_model[, PREDICTED := predicted]
+
+```
+
+Let's see how the model predicts big delays as opposed to small ones
+
+```{r}
+# Big Delays (larger than 90 minutes)
+bos_grouping1 <- boston_model[DEP_DELAY > 90]
+mse.grouping1 <- mean((bos_grouping1$DEP_DELAY - bos_grouping1$PREDICTED)^2)
+mse.grouping1
+
+
+# Smaller Delays (less than 90 minutes)
+bos_grouping2 <- boston_model[DEP_DELAY < 90]
+mse.grouping2 <- mean((bos_grouping2$DEP_DELAY - bos_grouping2$PREDICTED)^2)
+mse.grouping2
+```
+
+We can see that our Lasso model has a very high MSE, way higher than our Naive baseline, when we segment the flights to only include those that have a delay greater than 90 minutes. On the other hand, our model has an extremely low MSE when we segment the flights to only include those that have a delay of less than 90 minutes. We saw a similar result while segmenting our LA data set with predicted values from its Ridge Regression.
+
+
+
+### Atlanta
+Below is our code for the Atlanta Ridge and Decision Tree models, which yielded our best MSEs for this data set.
+
+
+
+
+## Brief summary of all models
+
+
+TABLE of MSE 
+
+| Airport         | Linear regression | Ridge regression | Lasso Regression | Decision Tree | Random Forest |
+|-----------------|-------------------|------------------|------------------|---------------|---------------|
+| **Los Angeles** | 1646.06           | 1284.65          | 1583.58          | 1308.15       | 1398.96       |
+| **Boston**      | 1803.11           | 1389.72          | 1386.19          | 1339.09       | 1335.86       |
+| **Atlanta**     | 2871.95           | 2342.99          | 2386.68          | 795.99        | 1383.07       |
+
+
+
+## Conclusion
+
+
+
+
+
+
+
+
+
+
