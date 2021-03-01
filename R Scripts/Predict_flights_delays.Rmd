@@ -1,16 +1,16 @@
 ---
-title: "Predicting flight delays"
-author: 'BA-810 Team #2'
-date: "2/27/2021"
+title: "Predicting Flight Delays"
+author: 'BA-810 Team - Jordan Grose, Maraline Torres, Barbara Liang, Yi Ming, Cheng Chen, Jingjing Lu'
+date: "3/2/2021"
 output:
   html_document: default
   pdf_document: default
 ---
 ## Introduction
 
-Flying doesn't always go smoothly. Many people have had some horror stories with weird delays but others haven't experienced this (Lucky them!). This brings us to the following question:  Wouldn't it be nice to know how much your flight will probably be delayed?
+Flying doesn't always go smoothly. Many people have horror stories of extremely long delays, but others haven't experienced this experience (Lucky them!). This brings us to the following question:  Wouldn't it be nice to know how much your flight will likely be delayed?
 
-That what this project will attempt to do, specifically for all airlines in Los Angeles, Boston and Atlanta airport. This will be a regression problem where we will try to predict delay time in number of minutes. 
+This project will attempt to predict flight delays in minutes, specifically for all airlines in the Los Angeles, Boston and Atlanta airports. We will employ a number of different models to try to solve this, including regressions, ridge & lasso, decision trees and random forest.
 
 ## Getting the data
 
@@ -80,7 +80,11 @@ setDT(dat_long)
 ggplot(dat_long, aes(x = ORIGIN, y = Value, fill = Stat)) +
   geom_col(position = "dodge") + ylab('Number of flights')  + ggtitle("Delay vs. On-time flights")
 ```
+   
+   
 Across all three locations, the majority of flights are on time. The trick is being able to predict which flights will be delayed.
+
+   
 ```{r}
 flights_by_year <-df[,.(Number_flights = .N), by =.(ORIGIN, YEAR)]
 flights_by_year$YEAR <- as.factor(flights_by_year$YEAR)
@@ -94,17 +98,23 @@ ggplot(flights_by_year, aes(x = ORIGIN, y = Number_flights, fill =YEAR)) +
 
 ```{r}
 weekly_delay <-df[,.(mean_delay = mean(DEP_DELAY)), by =.(DAY_OF_WEEK = df$DAY_OF_WEEK, ORIGIN = df$ORIGIN)]
-ggplot(weekly_delay,aes(x = DAY_OF_WEEK, y = mean_delay, color=ORIGIN)) + geom_point() + geom_line()  + ylab('Average Delay') + xlab('Day of the week') + ggtitle("Averga delay in days of the week")
+ggplot(weekly_delay,aes(x = DAY_OF_WEEK, y = mean_delay, color=ORIGIN)) + geom_point() + geom_line()  + ylab('Average Delay') + xlab('Day of the week') + ggtitle("Average delay in days of the week")
 ```
 
-Delays tend to increase later in the week. This could be because airports are busier on the weekend. We will likely want to keep Day of Week as a predictor in our models.
+   
+Delays tend to increase later in the week. This could be because airports are busier on the weekend. We will likely want to keep Day of Week as a predictor in our models.   
+
+
 
 ```{r}
 day_month_delay <-  df[,.(mean_delay = mean(DEP_DELAY)), by =.(DAY_OF_MONTH = DAY_OF_MONTH, ORIGIN = ORIGIN)]
 ggplot(day_month_delay,aes(x = DAY_OF_MONTH, y = mean_delay, color = ORIGIN)) + geom_point() + geom_line() + ylab('Average Delay') + xlab('Day of the month') + ggtitle("Average delay in days of the month")
 
 ```
-Boston has some outliers skewing the avg delay. Otherwise, all three locations share similar trends across the month.
+
+  
+Boston has some outliers skewing the avg delay. Otherwise, all three locations share similar trends across the month.  
+
 
 ```{r}
 distance_delay_weekly <- df.la[,.(delay = mean(DEP_DELAY), dist = mean(DISTANCE)), by ='DAY_OF_WEEK']
@@ -114,6 +124,8 @@ distance_delay_airline <- df.la[,.( delay = mean(DEP_DELAY), dist = mean(DISTANC
 ggplot(distance_delay_airline,aes(x = dist, y = delay)) + geom_point() + geom_smooth(method = "lm") + ggtitle("Los Angeles - Average Departure and flight distance by airline") + ylab("Average Departure Delay") + xlab("Average Flight Distance")
 
 ```
+
+   
 While Distance seems to have a positive relationship with delays, it is not very strong.  
 
 ## Models for each airport
@@ -292,7 +304,10 @@ fit.tree <- rpart(f1, data = df.train.dt,control = rpart.control(cp = 0.001), me
 printcp(fit.tree) # display the results
 plotcp(fit.tree) # visualize cross-validation results
 ```
+
 A good choice of cp for pruning is often the leftmost value for which the mean lies below the horizontal line.
+
+
 ```{r}
 # plot tree
 rpart.plot(fit.tree, type = 1)
