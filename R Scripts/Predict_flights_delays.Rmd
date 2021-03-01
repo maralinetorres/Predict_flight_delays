@@ -1,8 +1,10 @@
 ---
 title: "Predicting flight delays"
-author: "BA-810 Team #2"
+author: 'BA-810 Team #2'
 date: "2/27/2021"
-output: html_document
+output:
+  html_document: default
+  pdf_document: default
 ---
 ## Introduction
 
@@ -31,7 +33,7 @@ We gathered our flight data from the [US Department of Transportation](https://w
 
 The weather variables were retrieved using the World Weather API. We created a new column called "Total_Cancellations" which means the number of cancellations the day before in the specific airport and airline. However, we decided to remove the variable because it didn't have predictive value.
 
-## Load libraries
+
 ```{r echo=FALSE, message=FALSE, error=FALSE, warning=FALSE}
 library(data.table)
 library(ggplot2)
@@ -56,7 +58,7 @@ theme_set(theme_bw())
 The "df" contains observations for the three airports. The other three are subset data tables for each airport respectively.
 
 ```{r}
-df <- fread("/Users/cc/Desktop/BA810/Predict_flight_delays/Dataset/flights-master.csv")
+df <- fread("C:/Users/jorda/Documents/BU/flights.csv")
 df.la <- df[ORIGIN == 'LAX', ]
 df.bos <- df[ORIGIN == 'BOS', ]
 df.atl <- df[ORIGIN == 'ATL', ]
