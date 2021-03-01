@@ -1,0 +1,315 @@
+---
+title: "Untitled"
+author: "Xuanqi Liang(U86768582)"
+date: "2/28/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load libraries
+```{r echo=FALSE, message=FALSE, error=FALSE, warning=FALSE}
+library(data.table)
+library(ggplot2)
+library(ggthemes)
+library(scales)
+library(dplyr)
+library(glmnet)
+library(rpart) 
+library(rpart.plot)
+library(randomForest)
+library(tidyverse)
+library(caret)
+library(ipred)# for fitting bagged decision trees
+library(gbm)
+library(boot)
+library(hms)
+theme_set(theme_bw())
+```
+
+## Load Dataset 
+
+The "df" contains observations for the three airports. The other three are subset data tables for each airport respectively.
+
+```{r}
+df <- fread("/Users/liangxuanqi/Desktop/flights-master.csv")
+summary(df)
+```
+```{r}
+df$DAY_OF_MONTH <- as.factor(df$DAY_OF_MONTH)
+df$YEAR <- as.factor(df$YEAR)
+df$DAY_OF_WEEK <- as.factor(df$DAY_OF_WEEK)
+
+
+
+# dropping columns for models
+df[,MKT_CARRIER_AIRLINE_ID := NULL]
+df[,MKT_CARRIER := NULL]
+df[,TAIL_NUM := NULL]
+df[,ORIGIN_CITY_NAME := NULL]
+df[,ORIGIN_STATE_ABR := NULL]
+df[,DEST_CITY_NAME := NULL]
+df[,DEST_STATE_ABR := NULL]
+df[,DEST_STATE_NM := NULL]
+df[,DEP_TIME := NULL]
+df[,CRS_ARR_TIME := NULL]
+df[,ARR_TIME := NULL]
+df[,ARR_DELAY := NULL]
+df[,CANCELLED := NULL]
+df[,DIVERTED := NULL]
+df[,CRS_ELAPSED_TIME := NULL]
+df[,ACTUAL_ELAPSED_TIME := NULL]
+df[,AIR_TIME := NULL]
+df[,DIV_AIRPORT_LANDINGS := NULL]
+df[,DIV_REACHED_DEST := NULL]
+df[,CODE := NULL]
+df[,EARLY_AM := NULL]
+df[,AM := NULL]
+df[,PM := NULL]
+df[,LATE_PM := NULL]
+
+df.la <- df[ORIGIN == 'LAX', ]
+df.bos <- df[ORIGIN == 'BOS', ]
+df.atl <- df[ORIGIN == 'ATL', ]
+```
+
+
+```{r}
+df.atl$CRS_DEP_TIME <- as.character(df.atl$CRS_DEP_TIME)
+for( i in 1:nrow(df.atl)){
+  x <- df.atl[i,]
+  number_string = nchar(x$CRS_DEP_TIME)
+  if(number_string == 3){
+    df.atl[i,CRS_DEP_TIME := paste0("0", CRS_DEP_TIME)]
+  }else if(number_string == 2){
+    df.atl[i,CRS_DEP_TIME := paste0("0", CRS_DEP_TIME)]
+    df.atl[i,CRS_DEP_TIME := paste0("0", CRS_DEP_TIME)]
+  }else if(number_string == 1){
+    df.atl[i,CRS_DEP_TIME := paste0("0", CRS_DEP_TIME)]
+    df.atl[i,CRS_DEP_TIME := paste0("0", CRS_DEP_TIME)]
+    df.atl[i,CRS_DEP_TIME := paste0("0", CRS_DEP_TIME)]
+  }
+}
+
+d1 <- strptime(df.atl$CRS_DEP_TIME, format = "%H%M")
+d2 <- format(d1, format = "%H:%M:%S")
+df.atl[,CRS_DEP_TIME_Formatted := d2]
+df.atl$CRS_DEP_TIME_Formatted <- as.factor(df.atl$CRS_DEP_TIME_Formatted)
+df.atl[,CRS_DEP_HOUR := hour(as_hms(as.character(df.atl$CRS_DEP_TIME_Formatted)))]
+```
+
+
+```{r}
+weather <- fread("/Users/liangxuanqi/Desktop/atlanta-weather.csv")
+head(weather)
+weather$day <- as.factor(weather$day)
+weather$year <- as.factor(weather$year)
+
+atlanta <- merge(df.atl, weather, all.x =TRUE, by.x = c('DAY_OF_MONTH','YEAR'), by.y = c('day','year'))
+head(atlanta)
+```
+## Exploratory data analysis
+
+
+```{r}
+delayed <- df[DEP_DELAY > 0, .(number_delays = .N), by = ORIGIN]
+not_delayed <- df[DEP_DELAY <= 0,.(number_on_time = .N), by= ORIGIN]
+total <- merge(delayed, not_delayed, by='ORIGIN')
+total$ORIGIN <- as.factor(total$ORIGIN)
+dat_long <- total %>%
+  gather("Stat", "Value", -ORIGIN)
+setDT(dat_long)
+ggplot(dat_long, aes(x = ORIGIN, y = Value, fill = Stat)) +
+  geom_col(position = "dodge") + ylab('Number of flights')  + ggtitle("Delay vs. On-time flights")
+```
+Across all three locations, the majority of flights are on time. The trick is being able to predict which flights will be delayed.
+```{r}
+flights_by_year <-df[,.(Number_flights = .N), by =.(ORIGIN, YEAR)]
+flights_by_year$YEAR <- as.factor(flights_by_year$YEAR)
+ggplot(flights_by_year, aes(x = ORIGIN, y = Number_flights, fill =YEAR)) +
+  geom_col(position = "dodge") + ylab('Number of flights') + ggtitle("Number of flights - 2019 vs. 2020")
+```
+
+```{r}
+weekly_delay <-df[,.(mean_delay = mean(DEP_DELAY)), by =.(DAY_OF_WEEK = df$DAY_OF_WEEK, ORIGIN = df$ORIGIN)]
+ggplot(weekly_delay,aes(x = DAY_OF_WEEK, y = mean_delay, color=ORIGIN)) + geom_point() + geom_line()  + ylab('Average Delay') + xlab('Day of the week') + ggtitle("Averga delay in days of the week")
+```
+
+Delays tend to increase later in the week. This could be because airports are busier on the weekend. We will likely want to keep Day of Week as a predictor in our models.
+
+```{r}
+day_month_delay <-  df[,.(mean_delay = mean(DEP_DELAY)), by =.(DAY_OF_MONTH = DAY_OF_MONTH, ORIGIN = ORIGIN)]
+ggplot(day_month_delay,aes(x = DAY_OF_MONTH, y = mean_delay, color = ORIGIN)) + geom_point() + geom_line() + ylab('Average Delay') + xlab('Day of the month') + ggtitle("Average delay in days of the month")
+```
+Boston has some outliers skewing the avg delay. Otherwise, all three locations share similar trends across the month.
+
+```{r}
+distance_delay_weekly <- df.atl[,.(delay = mean(DEP_DELAY), dist = mean(DISTANCE)), by ='DAY_OF_WEEK']
+ggplot(distance_delay_weekly,aes(x = dist, y = delay)) + geom_point() + geom_smooth(method = "lm") + ggtitle("Los Angeles - Average Departure and distance by day of the week") + ylab("Average Departure Delay") + xlab("Average Flight Distance")
+distance_delay_airline <- df.atl[,.( delay = mean(DEP_DELAY), dist = mean(DISTANCE)), by ='AIRLINE']
+ggplot(distance_delay_airline,aes(x = dist, y = delay)) + geom_point() + geom_smooth(method = "lm") + ggtitle("Los Angeles - Average Departure and flight distance by airline") + ylab("Average Departure Delay") + xlab("Average Flight Distance")
+```
+
+## Models for each airport
+
+In this section, we present many of our models for each airport location and highlight which perform best (some models' code may be excluded in order to keep the length of the document down!)
+
+### Los Angeles Airport
+
+```{r echo=FALSE}
+set.seed(123)
+smp_size <- floor(.80 * nrow(atlanta))
+train_index <- sample(nrow(atlanta), smp_size) # assign 80% of the data to train
+df.test <- atlanta[-train_index,] ##not the one in train_index
+df.train <-atlanta[train_index,] 
+```
+
+#### Naive Regression
+
+Started doing the Naive Regression (Baseline) to have an MSE to compare to. 
+
+```{r}
+set.seed(123)
+y.test.b <- df.test$DEP_DELAY
+df_atl_y <- mean(df.train$DEP_DELAY)
+mse_baseline <- mean((y.test.b - df_atl_y)^2)
+rmse_baseline <- sqrt(mse_baseline)
+mse_baseline
+rmse_baseline 
+```
+
+#### Linear Regression
+
+##### Validation set approach
+
+Fit the model and make predictions using the train & test data sets. 
+
+```{r}
+y.train.lm <- df.train$DEP_DELAY
+y.test.lm <- df.test$DEP_DELAY
+f1 <- as.formula(DEP_DELAY ~ DAY_OF_MONTH + YEAR + DAY_OF_WEEK + AIRLINE + CRS_DEP_HOUR + humidity + precipMM + pressure + tempC + visibility + windspeedKmph)
+fit.lm1 <- lm(f1,df.train) 
+#Let's compute an MSE on the training data
+yhat.train.lm1 <- predict(fit.lm1)
+mse.train.lm1 <- mean((y.train.lm - yhat.train.lm1)^2)
+mse.train.lm1
+#Let's compute an MSE on the test data
+yhat.test.lm1 <- predict(fit.lm1, df.test)
+mse.test.lm1 <- mean((y.test.lm - yhat.test.lm1)^2)
+mse.test.lm1
+rmse_lm1 <- sqrt(mse.test.lm1)
+rmse_lm1
+```
+
+##### K-folds cross validation
+
+Considered the LOOCV method but it was too much computational cost. We decided to do the K-folds approach. 
+
+```{r}
+train.control <- trainControl(method = "cv", number = 10)
+#train.control <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+model <- train(f1, data =atlanta, method = "lm", trControl = train.control) # Train the model
+print(model) # Summarize the results
+```
+
+#### Ridge Regression
+
+Ridge regression shrinks coefficients towards zero. We used glmnet command to shrink coefficients towards zero. We passed the predictors matrix as parameters and used alpha=0 to invoke ridge regression. 
+
+```{r}
+dd <- copy(atlanta)
+dd[, test:=0] #Adds a new column with value 0
+dd[sample(nrow(dd),5000), test:=1] #Take 5k random rows and assign it to test
+dd.test <- dd[test==1]
+dd.train <- dd[test==0] #Around 33K for training
+#assign our response variable (target)
+y.train.r <- dd.train$DEP_DELAY
+y.test.r <- dd.test$DEP_DELAY
+x1.train <- model.matrix(f1, dd.train)[,-1]
+x1.test <- model.matrix(f1,dd.test)[,-1]
+fit.ridge <- cv.glmnet(x1.train, y.train.r, alpha = 0, nfolds = 10)
+##Test the MSE in training data
+yhat.train.ridge <- predict(fit.ridge, x1.train, s = fit.ridge$lambda.min)
+mse.train.ridge <- mean((y.train.r - yhat.train.ridge)^2)
+mse.train.ridge
+##Test the MSE test
+yhat.test.ridge <- predict(fit.ridge, x1.test, alpha = 0, s = fit.ridge$lambda.min)
+mse.test.ridge <-  mean((y.test.r - yhat.test.ridge)^2)
+mse.test.ridge 
+rsme_test_ridge <- sqrt(mse.test.ridge)
+rsme_test_ridge 
+```
+
+```{r}
+optimal_lambda <- fit.ridge$lambda.min
+coef(fit.ridge, s = optimal_lambda)
+```
+
+The optimal lambda is `r optimal_lambda`. 
+
+
+#### Lasso Regression
+
+The lasso is like ridge regression – but instead of shrinking coefficients towards zero,it tries to set as many as it can to zero.
+
+```{r}
+dd.lasso <- copy(atlanta)
+dd.lasso[, test:=0] 
+dd.lasso[sample(nrow(dd.lasso),5000), test:=1]
+dd.test.l <- dd.lasso[test==1]
+dd.train.l <- dd.lasso[test==0] #Around 33K for training
+y.train.lasso <- dd.train.l$DEP_DELAY
+y.test.lasso <- dd.test.l$DEP_DELAY
+x2.train <- model.matrix(f1, dd.train.l)[,-1]
+x2.test <- model.matrix(f1,dd.test.l)[,-1]
+fit.lasso <- cv.glmnet(x2.train, y.train.lasso, alpha = 1, nfolds = 10)
+##Test the MSE in training data
+yhat.train.lasso <- predict(fit.lasso, x2.train, s = fit.lasso$lambda.min)
+mse.train.lasso <- mean((y.train.lasso - yhat.train.lasso)^2)
+mse.train.lasso
+##Test the MSE test
+yhat.test.lasso <- predict(fit.lasso, x2.test, alpha = 0, s = fit.lasso$lambda.min)
+mse.test.lasso <-  mean((y.test.lasso - yhat.test.ridge)^2)
+mse.test.lasso 
+rmse_lasso <- sqrt(mse.test.lasso)
+rmse_lasso
+```
+#### Decision Tree Model
+
+```{r}
+smp_size <- floor(.75 * nrow(atlanta))
+train_index <- sample(nrow(atlanta), smp_size) 
+df.test.dt <- atlanta[-train_index,] ##not the one in train_index
+df.train.dt <-atlanta[train_index,] 
+y.train.dt <- df.train.dt$DEP_DELAY
+y.test.dt <- df.test.dt$DEP_DELAY
+f5 <- as.formula(DEP_DELAY ~ DAY_OF_MONTH + YEAR + CRS_DEP_HOUR  + CRS_ARR_TIME 
+                 + CRS_ELAPSED_TIME + humidity + precipMM)
+#grow tree
+fit.tree <- rpart(f1, data = df.train.dt,control = rpart.control(cp = 0.001), method = "anova")
+printcp(fit.tree) # display the results
+plotcp(fit.tree) # visualize cross-validation results
+```
+A good choice of cp for pruning is often the leftmost value for which the mean lies below the horizontal line.
+```{r}
+# plot tree
+rpart.plot(fit.tree, type = 1)
+```
+
+```{r}
+# prune the tree
+optimal_cp <- fit.tree$cptable[which.min(fit.tree$cptable[,"xerror"]),"CP"]
+pfit<- prune(fit.tree, cp=optimal_cp) # from cptable   
+rpart.plot(pfit)
+summary(pfit)
+yhat.train.tree <- predict(pfit, df.train.dt) 
+mse.train.tree <- mean((y.train.dt - yhat.train.tree) ^ 2)
+mse.train.tree
+yhat.test.tree <- predict(pfit, df.test.dt) 
+mse.test.tree <- mean((y.test.dt - yhat.test.tree) ^ 2)
+mse.test.tree
+rmse_tree_test <- sqrt(mse.test.tree)
+rmse_tree_test 
+```
