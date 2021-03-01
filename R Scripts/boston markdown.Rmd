@@ -340,9 +340,37 @@ rsample_pred=predict(rsample.rf,testData)
 Our last Random forest model returns an MSE of 1335.87, our lowest MSE yet. We can see that the optimal number of trees is around 100. We are conscious that increasing the number of trees will result in higher variance in our results going forward, so we want to select a number of trees that both minimizes MSE and keeps Variance as low as possible. We believe this will be 100 trees, with an MSE of 1335.87 (36.5 minutes) based on the Boston data. Again, the random forest model places visibility and departure time as being the most significant predictors for departure delay.
 
 
+#### Segmenting Boston flights
+While Random Forest yielded our best results, let's look back at our Lasso Regression to test various segments of our dataset, while keeping our Lasso predicted values to ultimately calculate MSE for various Boston flights (remember, our Lasso Regression had a Test MSE of 1386.19, or 37 mins, for all boston flights):
+
+```{r}
+boston[, test := NULL]
+boston_model <- boston
+X_lasso <- model.matrix(f1, boston_model)[, -1]
+predicted <- predict(fit.lasso, X_lasso, s=fit.lasso$lambda.min)
+mse.predicted <- mean((boston_model$DEP_DELAY - predicted)^2)
+mse.predicted # this is our MSE with the trained Boston Lasso regression on the entire boston dataset
+
+boston_model[, PREDICTED := predicted]
+
+```
+
+Let's see how the model predicts big delays as opposed to small ones
+
+```{r}
+# Big Delays (larger than 90 minutes)
+bos_grouping1 <- boston_model[DEP_DELAY > 90]
+mse.grouping1 <- mean((bos_grouping1$DEP_DELAY - bos_grouping1$PREDICTED)^2)
+mse.grouping1
 
 
+# Smaller Delays (less than 90 minutes)
+bos_grouping2 <- boston_model[DEP_DELAY < 90]
+mse.grouping2 <- mean((bos_grouping2$DEP_DELAY - bos_grouping2$PREDICTED)^2)
+mse.grouping2
+```
 
+We can see that our Lasso model has a very high MSE, way higher than our Naive baseline, when we segment the flights to only include those that have a delay greater than 90 minutes. On the other hand, our model has an extremely low MSE when we segment the flights to only include those that have a delay of less than 90 minutes. We expect this to be similar across all models and can condlude that our model does oa very good job of predicting smaller delays, but a poor job of predicting large delays. This could be because our feature set may not capture delay variance for large delays very well. Perhaps it is due to randomness, or perhaps there are key events that occur that lead to larger delays that we cannot incorporate into our model.
 
 
 
