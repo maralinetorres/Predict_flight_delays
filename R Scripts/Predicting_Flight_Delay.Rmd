@@ -12,6 +12,9 @@ Flying doesn't always go smoothly. Many people have horror stories of extremely 
 
 This project will attempt to predict flight delays in minutes, specifically for all airlines in the Los Angeles, Boston and Atlanta airports. We will employ a number of different models to try to solve this, including regressions, ridge & lasso, decision trees and random forest.
 
+A real world application of this could be a potential flight tracker application. Based on flight metadata, weather data, and possibly other sources of data in the future, predicting departure delay and notifying a flier prior to their arrival at the airport of their expected delay could be a very useful feature of a smartphone application.
+
+
 ## Getting the data
 
 We gathered our flight data from the [US Department of Transportation](https://www.bts.gov/) for March 2019 and 2020. We chose the following features:
@@ -615,7 +618,7 @@ Results:
 
 
 While the Train MSE LM1 was our lowest train MSE, the test MSE for this model was still pretty high with MSE of 1803.11. We expect this might be due to multicolinearity among predictors. 
-Let's try using Ridge, Lasso and Elastic Net Regressions to control for multicolinearity as we saw our best results in the LA dataset using these models. We will use all relevant predictors for these regressions because LM1 (all predictors) performed best for linear regression.
+Let's try using Ridge, Lasso and Elastic Net Regressions to control for multicolinearity as we saw our best results in the LA data set using these models. We will use all relevant predictors for these regressions because LM1 (all predictors) performed best for linear regression.
 
 
 ```{r message=FALSE, warning=FALSE, error=FALSE}
@@ -702,7 +705,7 @@ The Lasso Regression with Test MSE of 1386.19 (37.2 minutes) was the best perfor
 ```{r}
 ### DECISION TREE ###
 
-# split the dataset into train/test
+# split the data set into train/test
 set.seed(2021)
 index=sample(2,nrow(boston),replace = TRUE,prob=c(0.8,0.2))
 trainData<-boston[index==1,]  
@@ -954,6 +957,31 @@ TABLE of MSE
 
 ## Conclusion
 
+
+### Challenges
+
+
+* High variance - Most of our models would result in different MSEs without setting a random sampling seed. We suppose that this is why Ridge and Lasso regression tended to show better results. Lasso and Ridge regressions control best for multicolinearity and reduce variance across different samples. However, for the purposes of this report, we have set multiple seeds to maintain consistent results.
+
+* Initially we started out with data at every single airport, amounting to over 2 Million rows. We found that running models and generating EDA plots was a very slow process with this much data. Of the plots we were able to generate with all airports, we were not able to find any discernible trends within the data. Too much data lead to us not being able to identify good models to build, and running models lead took too long and lead to inconsistent results. We decided to start binning our data into three popular locations: LA, BOS, ATL. This method was much more feasible and became the basis of our report.
+
+* While we had most of the actual flight metadata, and weather data, we believe that there is still a large element of randomness at play here. Our feature set and subsequent models did a very good job at predicting small delays, but did not have enough information to predict large delays (> 90 minutes) well at all. We expect these delays are more random or would need more data in order to accurately predict.
+
+
+### Looking Forward
+
+
+* We looked at this problem mainly from an airport perspective. You could also generate models that look at different airlines and try to predict delays based on which airline is being used.
+
+* If we had more powerful computers, we would likely want to look data from other months and years. With more flights in our models, we would likely be able to reduce the error for predicting both small and larger delays. With more year-round data, we could incorporate different monthly trends as well as holiday trends to capture delays as a function of seasonality or big travel weeks. This would likely help our models in explaining more of the variance we saw in just the month of March.
+
+* We also think it would be interesting and very feasible to predict arrival delay. Obviously a predictor of arrival delay would be departure delay and this would likely give very accurate results. This could be used by people who are picking up friends/family at the airport: Once the flight takes off, the arrival delay would be predicted and the appriopriate parties would be notified of the expected delay.
+
+
+### Final Thoughts
+
+
+Overall, Atlanta models had the least amount of error. We expect this is because the number of observations was higher than in the other two cities, so the models had more data to work with. We also expect that there was less variance in Atlanta data overall, and possibly less large delays. While our Random Forrest or Decision Tree models did beat out Lasso & Regression for Los Angeles, these models experienced high variance. In Boston Ridge and Lasso performed best because they were able to control for variance best. Overall, we believe that for this particular dataset, Ridge and Lasso regressions are the most appropriate models to use because they control best for high variance, irrelevent features, and multicolinearity.
 
 
 
