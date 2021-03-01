@@ -29,7 +29,7 @@ We gathered our flight data from the [US Department of Transportation](https://w
 * visibility: Visibility index for the day and location
 * windspeedKmph: Wind speed for the day and location
 
-The weather variables were retrieved using the World Weather API. We created a new column called "Total_Cancellations" which means the number of cancellations the day before in the specific airport and airline. 
+The weather variables were retrieved using the World Weather API. We created a new column called "Total_Cancellations" which means the number of cancellations the day before in the specific airport and airline. However, we decided to remove the variable because it didn't have predictive value.
 
 ## Load libraries
 ```{r echo=FALSE, message=FALSE, error=FALSE, warning=FALSE}
@@ -56,7 +56,7 @@ theme_set(theme_bw())
 The "df" contains observations for the three airports. The other three are subset data tables for each airport respectively.
 
 ```{r}
-df <- fread("C:/Users/jorda/Documents/BU/flights.csv")
+df <- fread("/Users/cc/Desktop/BA810/Predict_flight_delays/Dataset/flights-master.csv")
 df.la <- df[ORIGIN == 'LAX', ]
 df.bos <- df[ORIGIN == 'BOS', ]
 df.atl <- df[ORIGIN == 'ATL', ]
@@ -226,6 +226,15 @@ rsme_test_ridge
 ```
 
 Ridge Regression gives the lowest MSE for Los Angeles airport with +- `r rsme_test_ridge`. This make sense because we have high variance in the data set mainly because of multiple outliers representing longer/weird delays.
+
+This is our best performance yet. Let's see the optimal lambda and the coefficients. 
+
+```{r}
+optimal_lambda <- fit.ridge$lambda.min
+coef(fit.ridge, s = optimal_lambda)
+```
+
+The optimal lambda is `r optimal_lambda`. 
 
 
 #### Lasso Regression
@@ -730,9 +739,13 @@ We can see that our Lasso model has a very high MSE, way higher than our Naive b
 The same models were used to predict Atlanta delays as well. Below is a table summarizing all of our results to make it easier to understand which models performed best in which cities.  
 
 
-TABLE  
+TABLE of MSE 
 
-
+| Airport         | Linear regression | Ridge regression | Lasso Regression | Decision Tree | Random Forest |
+|-----------------|-------------------|------------------|------------------|---------------|---------------|
+| **Los Angeles** | 1646.06           | 1284.65          | 1583.58          | 1308.15       | 1398.96       |
+| **Boston**      | 1803.11           | 1389.72          | 1386.19          | 1339.09       | 1335.86       |
+| **Atlanta**     |                   |                  |                  | 795.99        |               |
 
 
 ## Conclusion
