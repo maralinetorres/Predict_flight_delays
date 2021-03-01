@@ -29,7 +29,7 @@ We gathered our flight data from the [US Department of Transportation](https://w
 * visibility: Visibility index for the day and location
 * windspeedKmph: Wind speed for the day and location
 
-The weather variables were retrieved using the World Weather API. We created a new column called "Total_Cancellations" which means the number of cancellations the day before in the specific airport and airline. 
+The weather variables were retrieved using the World Weather API. We created a new column called "Total_Cancellations" which means the number of cancellations the day before in the specific airport and airline. However, we decided to remove the variable because it didn't have predictive value.
 
 ## Load libraries
 ```{r echo=FALSE, message=FALSE, error=FALSE, warning=FALSE}
@@ -226,6 +226,15 @@ rsme_test_ridge
 ```
 
 Ridge Regression gives the lowest MSE for Los Angeles airport with +- `r rsme_test_ridge`. This make sense because we have high variance in the data set mainly because of multiple outliers representing longer/weird delays.
+
+This is our best performance yet. Let's see the optimal lambda and the coefficients. 
+
+```{r}
+optimal_lambda <- fit.ridge$lambda.min
+coef(fit.ridge, s = optimal_lambda)
+```
+
+The optimal lambda is `r optimal_lambda`. 
 
 
 #### Lasso Regression
