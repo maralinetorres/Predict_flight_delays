@@ -278,7 +278,7 @@ mse.train.lasso
 
 ##Test the MSE test
 yhat.test.lasso <- predict(fit.lasso, x2.test, alpha = 0, s = fit.lasso$lambda.min)
-mse.test.lasso <-  mean((y.test.lasso - yhat.test.ridge)^2)
+mse.test.lasso <-  mean((y.test.lasso - yhat.test.lasso)^2)
 mse.test.lasso 
 
 rmse_lasso <- sqrt(mse.test.lasso)
@@ -791,10 +791,117 @@ We can see that our Lasso model has a very high MSE, way higher than our Naive b
 
 
 ### Atlanta
-Below is our code for the Atlanta Ridge and Decision Tree models, which yielded our best MSEs for this data set.
 
+Our last location is the Atlanta airport. We used similar code and formulas as the other two locations. For Linear Regression, we yield a RSME of 28-29 minutes. 
 
+Below is our code for the Atlanta Ridge Regression, which yielded our best MSEs for this data set. Also, we compare this MSE with the Naive Regression. 
 
+```{r echo=FALSE}
+set.seed(123)
+smp_size <- floor(.80 * nrow(df.atl))
+train_index <- sample(nrow(df.atl), smp_size) # assign 80% of the data to train
+df.test <- df.atl[-train_index,] ##not the one in train_index
+df.train <-df.atl[train_index,] 
+```
+
+#### Naive Regression
+
+Started doing the Naive Regression (Baseline) to have an MSE to compare to. 
+
+```{r}
+set.seed(123)
+y.test.b <- df.test$DEP_DELAY
+df_atl_y <- mean(df.train$DEP_DELAY)
+mse_baseline <- mean((y.test.b - df_atl_y)^2)
+rmse_baseline <- sqrt(mse_baseline)
+mse_baseline
+rmse_baseline 
+```
+
+We want to apply better ML techniques to yield a lower MSE. 
+
+#### Ridge Regression
+
+Let's see the RSME using Ridge Regression. Remember, this shrinks coefficients towards zero and reduces variance in our prediction. 
+
+```{r}
+set.seed(12345)
+dd <- copy(df.atl)
+dd[, test:=0] #Adds a new column with value 0
+dd[sample(nrow(dd),5000), test:=1] #Take 5k random rows and assign it to test
+dd.test <- dd[test==1]
+dd.train <- dd[test==0] #Around 33K for training
+
+#assign our response variable (target)
+y.train.r <- dd.train$DEP_DELAY
+y.test.r <- dd.test$DEP_DELAY
+
+f1 <- as.formula(DEP_DELAY ~ DAY_OF_MONTH + YEAR + DAY_OF_WEEK + AIRLINE 
+                 + CRS_DEP_HOUR  + CRS_ARR_TIME + humidity + precipMM + pressure 
+                 + tempC + visibility + windspeedKmph)
+
+x1.train <- model.matrix(f1, dd.train)[,-1]
+x1.test <- model.matrix(f1,dd.test)[,-1]
+fit.ridge <- cv.glmnet(x1.train, y.train.r, alpha = 0, nfolds = 10)
+##Test the MSE in training data
+yhat.train.ridge <- predict(fit.ridge, x1.train, s = fit.ridge$lambda.min)
+mse.train.ridge <- mean((y.train.r - yhat.train.ridge)^2)
+mse.train.ridge
+##Test the MSE test
+yhat.test.ridge <- predict(fit.ridge, x1.test, alpha = 0, s = fit.ridge$lambda.min)
+mse.test.ridge <-  mean((y.test.r - yhat.test.ridge)^2)
+mse.test.ridge 
+rsme_test_ridge <- sqrt(mse.test.ridge)
+rsme_test_ridge 
+```
+
+```{r}
+optimal_lambda <- fit.ridge$lambda.min
+coef(fit.ridge, s = optimal_lambda)
+```
+
+The optimal lambda is `r optimal_lambda` and we also printed the coefficients using Ridge Regression. We also ran Lasso Regression and it resulted in a similar MSE. 
+
+#### Decision Tree Model
+
+Let's see if Decision Tree Model yields a lower MSE. 
+
+```{r}
+set.seed(12345)
+smp_size <- floor(.80 * nrow(df.atl))
+train_index <- sample(nrow(df.atl), smp_size) 
+df.test.dt <- df.atl[-train_index,] ##not the one in train_index
+df.train.dt <-df.atl[train_index,] 
+y.train.dt <- df.train.dt$DEP_DELAY
+y.test.dt <- df.test.dt$DEP_DELAY
+
+#grow tree
+fit.tree <- rpart(f1, data = df.train.dt,control = rpart.control(cp = 0.001), method = "anova")
+printcp(fit.tree) # display the results
+plotcp(fit.tree) # visualize cross-validation results
+```
+
+```{r}
+# plot tree
+rpart.plot(fit.tree, type = 1)
+optimal_cp <- fit.tree$cptable[which.min(fit.tree$cptable[,"xerror"]),"CP"]
+pfit<- prune(fit.tree, cp=optimal_cp) # from cptable   
+rpart.plot(pfit)
+
+#Train
+yhat.train.tree.atl <- predict(pfit, df.train.dt) 
+mse.train.tree.atl <- mean((y.train.dt - yhat.train.tree.atl) ^ 2)
+mse.train.tree.atl
+
+#Test
+yhat.test.tree.atl <- predict(pfit, df.test.dt) 
+mse.test.tree.atl <- mean((y.test.dt - yhat.test.tree.atl) ^ 2)
+mse.test.tree.atl
+rmse_tree_test.atl <- sqrt(mse.test.tree.atl)
+rmse_tree_test.atl
+```
+
+The RSME test using Decision Tree is `r rmse_tree_test.atl`. We were unable to yield a lower MSE using Decision Tree model.
 
 ## Brief summary of all models
 
@@ -805,7 +912,7 @@ TABLE of MSE
 |-----------------|-------------------|------------------|------------------|---------------|---------------|
 | **Los Angeles** | 1646.06           | 1284.65          | 1583.58          | 1308.15       | 1398.96       |
 | **Boston**      | 1803.11           | 1389.72          | 1386.19          | 1339.09       | 1335.86       |
-| **Atlanta**     | 2871.95           | 2342.99          | 2386.68          | 795.99        | 1383.07       |
+| **Atlanta**     | 832.6257          | 612.341          | 612.3239         | 648.2747      | N/A           |
 
 
 
