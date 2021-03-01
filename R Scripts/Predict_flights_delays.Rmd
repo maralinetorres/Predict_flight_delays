@@ -56,7 +56,7 @@ theme_set(theme_bw())
 The "df" contains observations for the three airports. The other three are subset data tables for each airport respectively.
 
 ```{r}
-df <- fread("C:/Users/jorda/Documents/BU/flights.csv")
+df <- fread("/Users/cc/Desktop/BA810/Predict_flight_delays/Dataset/flights-master.csv")
 df.la <- df[ORIGIN == 'LAX', ]
 df.bos <- df[ORIGIN == 'BOS', ]
 df.atl <- df[ORIGIN == 'ATL', ]
@@ -739,9 +739,13 @@ We can see that our Lasso model has a very high MSE, way higher than our Naive b
 The same models were used to predict Atlanta delays as well. Below is a table summarizing all of our results to make it easier to understand which models performed best in which cities.  
 
 
-TABLE  
+TABLE of MSE 
 
-
+| Airport         | Linear regression | Ridge regression | Lasso Regression | Decision Tree | Random Forest |
+|-----------------|-------------------|------------------|------------------|---------------|---------------|
+| **Los Angeles** | 1646.06           | 1284.65          | 1583.58          | 1308.15       | 1398.96       |
+| **Boston**      | 1803.11           | 1389.72          | 1386.19          | 1339.09       | 1335.86       |
+| **Atlanta**     |                   |                  |                  | 795.99        |               |
 
 
 ## Conclusion
