@@ -790,7 +790,7 @@ We can see that our Lasso model has a very high MSE, way higher than our Naive b
 
 
 
-### Atlanta
+### Atlanta Flights
 
 Our last location is the Atlanta airport. We used similar code and formulas as the other two locations. For Linear Regression, we yield a RSME of 28-29 minutes. 
 
@@ -903,6 +903,42 @@ rmse_tree_test.atl
 
 The RSME test using Decision Tree is `r rmse_tree_test.atl`. We were unable to yield a lower MSE using Decision Tree model.
 
+
+
+#### Segmenting Atlanta Flights
+```{r}
+# apply Ridge model to the entire ATL data set, not just the test group
+dd[, test := NULL]
+ATL_model <- dd
+X_ridge_ATL <- model.matrix(f1, ATL_model)[, -1]
+predicted_atl <- predict(fit.ridge, X_ridge_ATL, s=fit.ridge$lambda.min)
+mse.predicted_atl <- mean((ATL_model$DEP_DELAY - predicted_atl)^2)
+mse.predicted_atl # this is our MSE with the trained ATL Ridge regression on the entire ATL data set
+
+ATL_model[, PREDICTED := predicted_atl]
+
+```
+
+Let's see how the model predicts big delays as opposed to small ones
+
+```{r}
+# Big Delays (larger than 90 minutes)
+atl_grouping1 <- ATL_model[DEP_DELAY > 90]
+mse.grouping1 <- mean((atl_grouping1$DEP_DELAY - atl_grouping1$PREDICTED)^2)
+mse.grouping1
+
+
+# Smaller Delays (less than 90 minutes)
+atl_grouping2 <- ATL_model[DEP_DELAY < 90]
+mse.grouping2 <- mean((atl_grouping2$DEP_DELAY - atl_grouping2$PREDICTED)^2)
+mse.grouping2
+```
+
+As we saw before, our Ridge model results has a very high MSE, way higher than our Naive baseline, when we segment the flights to only include those that have a delay greater than 90 minutes. On the other hand, our model has an extremely low MSE when we segment the flights to only include those that have a delay of less than 90 minutes. We saw a similar result while segmenting our LA & Boston data sets with predicted values and actual departure delays. This is likely due to our models being able to predict small delays better than large delays, most likely because large delays are related to either randomness or events that we are unable to capture in our current feature set.
+
+
+
+
 ## Brief summary of all models
 
 
@@ -910,7 +946,7 @@ TABLE of MSE
 
 | Airport         | Linear regression | Ridge regression | Lasso Regression | Decision Tree | Random Forest |
 |-----------------|-------------------|------------------|------------------|---------------|---------------|
-| **Los Angeles** | 1646.06           | 1284.65          | 1583.58          | 1308.15       | 1398.96       |
+| **Los Angeles** | 1646.06           | 1284.65          | 1512.52          | 1308.15       | 1398.96       |
 | **Boston**      | 1803.11           | 1389.72          | 1386.19          | 1339.09       | 1335.86       |
 | **Atlanta**     | 832.6257          | 612.341          | 612.3239         | 648.2747      | N/A           |
 
